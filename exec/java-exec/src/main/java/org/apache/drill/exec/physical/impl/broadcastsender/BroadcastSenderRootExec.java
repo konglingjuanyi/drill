@@ -21,18 +21,16 @@ import io.netty.buffer.ByteBuf;
 
 import java.util.List;
 
-import org.apache.drill.exec.ExecConstants;
-import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.memory.OutOfMemoryException;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.ops.MetricDef;
 import org.apache.drill.exec.ops.OperatorContext;
+import org.apache.drill.exec.physical.MinorFragmentEndpoint;
 import org.apache.drill.exec.physical.config.BroadcastSender;
 import org.apache.drill.exec.physical.impl.BaseRootExec;
 import org.apache.drill.exec.physical.impl.SendingAccountor;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
 import org.apache.drill.exec.proto.ExecProtos;
-import org.apache.drill.exec.proto.ExecProtos.FragmentHandle;
 import org.apache.drill.exec.proto.GeneralRPCProtos;
 import org.apache.drill.exec.proto.GeneralRPCProtos.Ack;
 import org.apache.drill.exec.record.FragmentWritableBatch;
@@ -43,6 +41,8 @@ import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.data.DataTunnel;
 import org.apache.drill.exec.work.ErrorHelper;
 
+import com.google.common.collect.ArrayListMultimap;
+
 /**
  * Broadcast Sender broadcasts incoming batches to all receivers (one or more).
  * This is useful in cases such as broadcast join where sending the entire table to join
@@ -50,8 +50,10 @@ import org.apache.drill.exec.work.ErrorHelper;
  */
 public class BroadcastSenderRootExec extends BaseRootExec {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(BroadcastSenderRootExec.class);
+  private final StatusHandler statusHandler = new StatusHandler();
   private final FragmentContext context;
   private final BroadcastSender config;
+  private final int[][] receivingMinorFragments;
   private final DataTunnel[] tunnels;
   private final ExecProtos.FragmentHandle handle;
   private volatile boolean ok;
@@ -70,17 +72,33 @@ public class BroadcastSenderRootExec extends BaseRootExec {
                                  RecordBatch incoming,
                                  BroadcastSender config) throws OutOfMemoryException {
     super(context, new OperatorContext(config, context, null, false), config);
-    //super(context, config);
     this.ok = true;
     this.context = context;
     this.incoming = incoming;
     this.config = config;
     this.handle = context.getHandle();
-    List<DrillbitEndpoint> destinations = config.getDestinations();
-    this.tunnels = new DataTunnel[destinations.size()];
-    for(int i = 0; i < destinations.size(); ++i) {
-      FragmentHandle opp = handle.toBuilder().setMajorFragmentId(config.getOppositeMajorFragmentId()).setMinorFragmentId(i).build();
-      tunnels[i] = context.getDataTunnel(destinations.get(i), opp);
+    List<MinorFragmentEndpoint> destinations = config.getDestinations();
+    ArrayListMultimap<DrillbitEndpoint, Integer> dests = ArrayListMultimap.create();
+
+    for(MinorFragmentEndpoint destination : destinations) {
+      dests.put(destination.getEndpoint(), destination.getId());
+    }
+
+    int destCount = dests.keySet().size();
+    int i = 0;
+
+    this.tunnels = new DataTunnel[destCount];
+    this.receivingMinorFragments = new int[destCount][];
+    for(DrillbitEndpoint ep : dests.keySet()){
+      List<Integer> minorsList= dests.get(ep);
+      int[] minorsArray = new int[minorsList.size()];
+      int x = 0;
+      for(Integer m : minorsList){
+        minorsArray[x++] = m;
+      }
+      receivingMinorFragments[i] = minorsArray;
+      tunnels[i] = context.getDataTunnel(ep);
+      i++;
     }
   }
 
@@ -97,16 +115,20 @@ public class BroadcastSenderRootExec extends BaseRootExec {
       case STOP:
       case NONE:
         for (int i = 0; i < tunnels.length; ++i) {
-          FragmentWritableBatch b2 = FragmentWritableBatch.getEmptyLast(handle.getQueryId(), handle.getMajorFragmentId(), handle.getMinorFragmentId(), config.getOppositeMajorFragmentId(), i);
+          FragmentWritableBatch b2 = FragmentWritableBatch.getEmptyLast(
+              handle.getQueryId(),
+              handle.getMajorFragmentId(),
+              handle.getMinorFragmentId(),
+              config.getOppositeMajorFragmentId(),
+              receivingMinorFragments[i]);
           stats.startWait();
           try {
             tunnels[i].sendRecordBatch(this.statusHandler, b2);
+            statusHandler.sendCount.increment();
           } finally {
             stats.stopWait();
           }
-          statusHandler.sendCount.increment();
         }
-
         return false;
 
       case OK_NEW_SCHEMA:
@@ -116,15 +138,22 @@ public class BroadcastSenderRootExec extends BaseRootExec {
           writableBatch.retainBuffers(tunnels.length - 1);
         }
         for (int i = 0; i < tunnels.length; ++i) {
-          FragmentWritableBatch batch = new FragmentWritableBatch(false, handle.getQueryId(), handle.getMajorFragmentId(), handle.getMinorFragmentId(), config.getOppositeMajorFragmentId(), i, writableBatch);
+          FragmentWritableBatch batch = new FragmentWritableBatch(
+              false,
+              handle.getQueryId(),
+              handle.getMajorFragmentId(),
+              handle.getMinorFragmentId(),
+              config.getOppositeMajorFragmentId(),
+              receivingMinorFragments[i],
+              writableBatch);
           updateStats(batch);
           stats.startWait();
           try {
             tunnels[i].sendRecordBatch(this.statusHandler, batch);
+            statusHandler.sendCount.increment();
           } finally {
             stats.stopWait();
           }
-          statusHandler.sendCount.increment();
         }
 
         return ok;
@@ -140,29 +169,6 @@ public class BroadcastSenderRootExec extends BaseRootExec {
     stats.addLongStat(Metric.BYTES_SENT, writableBatch.getByteCount());
   }
 
-  /*
-  private boolean waitAllFutures(boolean haltOnError) {
-    for (DrillRpcFuture<?> responseFuture : responseFutures) {
-      try {
-        GeneralRPCProtos.Ack ack = (GeneralRPCProtos.Ack) responseFuture.checkedGet();
-        if(!ack.getOk()) {
-          ok = false;
-          if (haltOnError) {
-            return false;
-          }
-        }
-      } catch (RpcException e) {
-        logger.error("Error sending batch to receiver: " + e);
-        ok = false;
-        if (haltOnError) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-*/
-
   @Override
   public void stop() {
       ok = false;
@@ -171,7 +177,6 @@ public class BroadcastSenderRootExec extends BaseRootExec {
       incoming.cleanup();
   }
 
-  private StatusHandler statusHandler = new StatusHandler();
   private class StatusHandler extends BaseRpcOutcomeListener<GeneralRPCProtos.Ack> {
     volatile RpcException ex;
     private final SendingAccountor sendCount = new SendingAccountor();
@@ -191,5 +196,4 @@ public class BroadcastSenderRootExec extends BaseRootExec {
       this.ex = ex;
     }
   }
-
 }
