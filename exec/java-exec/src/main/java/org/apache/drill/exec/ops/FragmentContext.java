@@ -56,7 +56,7 @@ import com.google.common.collect.Maps;
 /**
  * Contextual objects required for execution of a particular fragment.
  */
-public class FragmentContext implements Closeable {
+public class FragmentContext implements AutoCloseable, UdfUtilities {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FragmentContext.class);
 
 
@@ -70,12 +70,11 @@ public class FragmentContext implements Closeable {
   private final BufferAllocator allocator;
   private final PlanFragment fragment;
   private List<Thread> daemonThreads = Lists.newLinkedList();
+  private QueryDateTimeInfo queryDateTimeInfo;
   private IncomingBuffers buffers;
-  private final long queryStartTime;
-  private final int rootFragmentTimeZone;
   private final OptionManager fragmentOptions;
   private final UserCredentials credentials;
-  private LongObjectOpenHashMap<DrillBuf> managedBuffers = new LongObjectOpenHashMap<>();
+  private final BufferManager bufferManager;
 
   private volatile Throwable failureCause;
   private volatile FragmentContextState state = FragmentContextState.OK;
@@ -93,9 +92,8 @@ public class FragmentContext implements Closeable {
     this.connection = connection;
     this.fragment = fragment;
     this.funcRegistry = funcRegistry;
-    this.queryStartTime = fragment.getQueryStartTime();
-    this.rootFragmentTimeZone = fragment.getTimeZone();
     this.credentials = fragment.getCredentials();
+    this.queryDateTimeInfo = new QueryDateTimeInfo(fragment.getQueryStartTime(), fragment.getTimeZone());
     logger.debug("Getting initial memory allocation of {}", fragment.getMemInitial());
     logger.debug("Fragment max allocation: {}", fragment.getMemMax());
     try {
@@ -119,6 +117,7 @@ public class FragmentContext implements Closeable {
       throw new ExecutionSetupException("Failure while getting memory allocator for fragment.", e);
     }
     this.stats = new FragmentStats(allocator, dbContext.getMetrics(), fragment.getAssignment());
+    this.bufferManager = new BufferManager(this.allocator, this);
 
     this.loader = new QueryClassLoader(dbContext.getConfig(), fragmentOptions);
   }
@@ -181,12 +180,8 @@ public class FragmentContext implements Closeable {
     return this.stats;
   }
 
-  public long getQueryStartTime() {
-    return this.queryStartTime;
-  }
-
-  public int getRootFragmentTimeZone() {
-    return this.rootFragmentTimeZone;
+  public QueryDateTimeInfo getQueryDateTimeInfo(){
+    return this.queryDateTimeInfo;
   }
 
   public DrillbitEndpoint getForemanEndpoint() {return fragment.getForeman();}
@@ -297,16 +292,11 @@ public class FragmentContext implements Closeable {
   }
 
   @Override
-  public void close() {
+  public void close() throws Exception {
     for (Thread thread: daemonThreads) {
-     thread.interrupt();
+      thread.interrupt();
     }
-    Object[] mbuffers = ((LongObjectOpenHashMap<Object>)(Object)managedBuffers).values;
-    for (int i =0; i < mbuffers.length; i++) {
-      if (managedBuffers.allocated[i]) {
-        ((DrillBuf)mbuffers[i]).release();
-      }
-    }
+    bufferManager.close();
 
     if (buffers != null) {
       buffers.close();
@@ -319,22 +309,15 @@ public class FragmentContext implements Closeable {
   }
 
   public DrillBuf replace(DrillBuf old, int newSize) {
-    if (managedBuffers.remove(old.memoryAddress()) == null) {
-      throw new IllegalStateException("Tried to remove unmanaged buffer.");
-    }
-    old.release();
-    return getManagedBuffer(newSize);
+    return bufferManager.replace(old, newSize);
   }
 
   public DrillBuf getManagedBuffer() {
-    return getManagedBuffer(256);
+    return bufferManager.getManagedBuffer();
   }
 
   public DrillBuf getManagedBuffer(int size) {
-    DrillBuf newBuf = allocator.buffer(size);
-    managedBuffers.put(newBuf.memoryAddress(), newBuf);
-    newBuf.setFragmentContext(this);
-    return newBuf;
+    return bufferManager.getManagedBuffer(size);
   }
 
 }

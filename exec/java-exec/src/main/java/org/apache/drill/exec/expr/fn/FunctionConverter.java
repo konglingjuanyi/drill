@@ -17,6 +17,7 @@
  */
 package org.apache.drill.exec.expr.fn;
 
+import com.google.common.base.Joiner;
 import io.netty.buffer.DrillBuf;
 
 import java.io.IOException;
@@ -24,6 +25,7 @@ import java.io.InputStream;
 import java.io.StringReader;
 import java.lang.reflect.Field;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -31,8 +33,8 @@ import javax.inject.Inject;
 
 import org.apache.drill.common.types.TypeProtos.MajorType;
 import org.apache.drill.common.util.FileUtils;
-import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.expr.DrillFunc;
+import org.apache.drill.exec.expr.DrillSimpleFunc;
 import org.apache.drill.exec.expr.annotations.FunctionTemplate;
 import org.apache.drill.exec.expr.annotations.FunctionTemplate.FunctionScope;
 import org.apache.drill.exec.expr.annotations.Output;
@@ -40,8 +42,9 @@ import org.apache.drill.exec.expr.annotations.Param;
 import org.apache.drill.exec.expr.annotations.Workspace;
 import org.apache.drill.exec.expr.fn.DrillFuncHolder.ValueReference;
 import org.apache.drill.exec.expr.fn.DrillFuncHolder.WorkspaceReference;
-import org.apache.drill.exec.expr.fn.interpreter.InterpreterGenerator;
 import org.apache.drill.exec.expr.holders.ValueHolder;
+import org.apache.drill.exec.ops.QueryDateTimeInfo;
+import org.apache.drill.exec.ops.UdfUtilities;
 import org.apache.drill.exec.vector.complex.reader.FieldReader;
 import org.apache.drill.exec.vector.complex.writer.BaseWriter.ComplexWriter;
 import org.codehaus.commons.compiler.CompileException;
@@ -94,6 +97,15 @@ public class FunctionConverter {
 
     }
 
+  }
+
+  /**
+   * Get the name of the class used for interpreted expression evaluation.
+   *
+   * @return - class name of interpreted evaluator
+   */
+  private String getInterpreterClassName(Class clazz)  {
+    return clazz.getName();
   }
 
   public <T extends DrillFunc> DrillFuncHolder getHolder(Class<T> clazz) {
@@ -189,8 +201,9 @@ public class FunctionConverter {
       } else {
         // workspace work.
         boolean isInject = inject != null;
-        if (isInject && !field.getType().equals(DrillBuf.class)) {
-          return failure(String.format("Only DrillBuf is allowed to be injected.  You attempted to inject %s.", field.getType()), clazz, field);
+        if (isInject && UdfUtilities.INJECTABLE_GETTER_METHODS.get(field.getType()) == null) {
+          return failure(String.format("A %s cannot be injected into a %s, available injectable classes are: %s.",
+              field.getType(), DrillFunc.class.getSimpleName(), Joiner.on(",").join(UdfUtilities.INJECTABLE_GETTER_METHODS.keySet())), clazz, field);
         }
         WorkspaceReference wsReference = new WorkspaceReference(field.getType(), field.getName(), isInject);
 
@@ -260,38 +273,47 @@ public class FunctionConverter {
                                            template.isBinaryCommutative(),
                                            template.isRandom(), registeredNames,
                                            ps, outputField, works, methods, imports, template.costCategory(),
-                                           clazz.getSimpleName() + InterpreterGenerator.INTERPRETER_CLASSNAME_POSTFIX);
+                                           (Class<DrillSimpleFunc>)clazz
+                                           );
         }
       case SC_BOOLEAN_OPERATOR:
         return new DrillBooleanOPHolder(template.scope(), template.nulls(),
             template.isBinaryCommutative(),
             template.isRandom(), registeredNames,
-            ps, outputField, works, methods, imports);
+            ps, outputField, works, methods, imports, FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
 
       case DECIMAL_MAX_SCALE:
           return new DrillDecimalMaxScaleFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_MUL_SCALE:
           return new DrillDecimalSumScaleFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_ADD_SCALE:
           return new DrillDecimalAddFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_CAST:
           return new DrillDecimalCastFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_DIV_SCALE:
           return new DrillDecimalDivScaleFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_MOD_SCALE:
           return new DrillDecimalModScaleFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_SET_SCALE:
           return new DrillDecimalSetScaleFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case DECIMAL_ZERO_SCALE:
           return new DrillDecimalZeroScaleFuncHolder(template.scope(), template.nulls(), template.isBinaryCommutative(),
-                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports);
+                  template.isRandom(), registeredNames, ps, outputField, works, methods, imports,
+              FunctionTemplate.FunctionCostCategory.getDefault(), (Class<DrillSimpleFunc>)clazz);
       case HOLISTIC_AGGREGATE:
       case RANGE_AGGREGATE:
       default:
