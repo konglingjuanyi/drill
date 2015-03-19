@@ -20,6 +20,7 @@ package org.apache.drill.exec.physical.impl.flatten;
 import static org.junit.Assert.assertEquals;
 
 import org.apache.drill.BaseTestQuery;
+import org.apache.drill.common.util.FileUtils;
 import org.apache.drill.exec.proto.UserBitShared;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -249,4 +250,47 @@ public class TestFlatten extends BaseTestQuery {
             .build().run();
   }
 
+  @Test
+  public void testDRILL_2106() throws Exception {
+    testBuilder()
+        .sqlQuery("select rl, flatten(rl) frl from (select `integer`, flatten(rl) as rl from cp.`jsoninput/input2.json`)")
+        .unOrdered()
+        .jsonBaselineFile("flatten/drill-2106-result.json")
+        .go();
+
+    testBuilder()
+        .sqlQuery("select rl, flatten(rl) frl from (select flatten(rl) as rl, `integer` from cp.`jsoninput/input2.json`)")
+        .unOrdered()
+        .jsonBaselineFile("flatten/drill-2106-result.json")
+        .go();
+
+  }
+
+  @Test // see DRILL-2146
+  public void testFalttenWithStar() throws Exception {
+    String root = FileUtils.getResourceAsFile("/store/text/sample.json").toURI().toString();
+    String q1 = String.format("select *, flatten(j.topping) tt, flatten(j.batters.batter) bb, j.id " +
+        "from dfs_test.`%s` j " +
+        "where j.type = 'donut'", root);
+    String q2 = String.format("select *, flatten(j.topping) tt, flatten(j.batters.batter) bb, j.id, j.type " +
+        "from dfs_test.`%s` j " +
+        "where j.type = 'donut'", root);
+
+    test(q1);
+    test(q2);
+  }
+
+  @Test // see DRILL-2012
+  public void testMultipleFalttenWithWhereClause() throws Exception {
+    String root = FileUtils.getResourceAsFile("/store/text/sample.json").toURI().toString();
+    String q1 = String.format("select flatten(j.topping) tt " +
+        "from dfs_test.`%s` j " +
+        "where j.type = 'donut'", root);
+    String q2 = String.format("select j.type, flatten(j.topping) tt " +
+         "from dfs_test.`%s` j " +
+         "where j.type = 'donut'", root);
+
+    test(q1);
+    test(q2);
+  }
 }
