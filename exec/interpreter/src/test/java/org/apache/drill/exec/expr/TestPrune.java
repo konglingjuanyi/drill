@@ -1,4 +1,4 @@
-/**
+/*******************************************************************************
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -14,20 +14,25 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-package org.apache.drill.exec;
+ ******************************************************************************/
+package org.apache.drill.exec.expr;
 
-import org.apache.drill.exec.metrics.DrillMetrics;
-import org.apache.drill.test.DrillTest;
-import org.junit.After;
+import org.apache.drill.BaseTestQuery;
+import org.apache.drill.common.util.TestTools;
+import org.junit.Test;
 
-public class ExecTest extends DrillTest {
+public class TestPrune extends BaseTestQuery {
 
-  @After
-  public void clear(){
-    // TODO:  (Re DRILL-1735) Check whether still needed now that
-    // BootstrapContext.close() resets the metrics.
-    DrillMetrics.resetMetrics();
+  String MULTILEVEL = TestTools.getWorkingPath() + "/../java-exec/src/test/resources/multilevel";
+
+  @Test
+  public void pruneCompound() throws Exception {
+    test(String.format("select * from dfs.`%s/csv` where x is null and dir1 in ('Q1', 'Q2')", MULTILEVEL));
+  }
+
+  @Test
+  public void pruneSimple() throws Exception {
+    test(String.format("select * from dfs.`%s/csv` where dir1 in ('Q1', 'Q2')", MULTILEVEL));
   }
 
 }
