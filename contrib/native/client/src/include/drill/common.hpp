@@ -58,6 +58,16 @@
 #endif // _WIN32 && !_WIN64
 
 
+//DEPRECATED MACRO
+#if defined(__GNUC__) || defined(__llvm__)
+#define DEPRECATED __attribute__((deprecated))
+#elif defined(_MSC_VER)
+#define DEPRECATED __declspec(deprecated)
+#else
+#pragma message("WARNING: DEPRECATED not available for this compiler")
+#define DEPRECATED
+#endif
+
 namespace Drill {
 
 typedef std::vector<uint8_t> DataBuf;
@@ -96,7 +106,8 @@ typedef enum{
     CONN_HANDSHAKE_FAILED=2,
     CONN_INVALID_INPUT=3,
     CONN_ZOOKEEPER_ERROR=4,
-    CONN_HANDSHAKE_TIMEOUT=5
+    CONN_HANDSHAKE_TIMEOUT=5,
+    CONN_HOSTNAME_RESOLUTION_ERROR=6
 } connectionStatus_t;
 
 typedef enum{
@@ -117,6 +128,28 @@ typedef enum{
     RET_SUCCESS=0,
     RET_FAILURE=1
 } ret_t;
+
+
+// User Property Names
+#define USERPROP_USERNAME "userName"
+#define USERPROP_PASSWORD "password"
+#define USERPROP_SCHEMA   "schema"
+#define USERPROP_USESSL   "useSSL"        // Not implemented yet
+#define USERPROP_FILEPATH "pemLocation"   // Not implemented yet
+#define USERPROP_FILENAME "pemFile"       // Not implemented yet
+
+// Bitflags to describe user properties
+// Used in DrillUserProperties::USER_PROPERTIES
+#define USERPROP_FLAGS_SERVERPROP 0x00000001
+#define USERPROP_FLAGS_SSLPROP    0x00000002
+#define USERPROP_FLAGS_PASSWORD   0x00000004
+#define USERPROP_FLAGS_FILENAME   0x00000008
+#define USERPROP_FLAGS_FILEPATH   0x00000010
+#define USERPROP_FLAGS_STRING     0x00000020
+#define USERPROP_FLAGS_BOOLEAN    0x00000040
+
+#define IS_BITSET(val, bit) \
+    ((val&bit)==bit)
 
 } // namespace Drill
 
