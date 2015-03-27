@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -52,6 +53,7 @@ import org.apache.drill.exec.work.user.UserWorker;
 
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.MetricRegistry;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 
@@ -167,18 +169,79 @@ public class WorkManager implements AutoCloseable {
     return dContext;
   }
 
+  private CountDownLatch exitLatch = null; // used to wait to exit when things are still running
+
+  /**
+   * Waits until it is safe to exit. Blocks until all currently running fragments have completed.
+   *
+   * <p>This is intended to be used by {@link org.apache.drill.exec.server.Drillbit#close()}.</p>
+   */
+  public void waitToExit() {
+    synchronized(this) {
+      if (queries.isEmpty() && runningFragments.isEmpty()) {
+        return;
+      }
+
+      exitLatch = new CountDownLatch(1);
+    }
+
+    while(true) {
+      try {
+        exitLatch.await(5, TimeUnit.SECONDS);
+      } catch(InterruptedException e) {
+        // keep waiting
+      }
+      break;
+    }
+  }
+
+  /**
+   * If it is safe to exit, and the exitLatch is in use, signals it so that waitToExit() will
+   * unblock.
+   */
+  private void indicateIfSafeToExit() {
+    synchronized(this) {
+      if (exitLatch != null) {
+        if (queries.isEmpty() && runningFragments.isEmpty()) {
+          exitLatch.countDown();
+        }
+      }
+    }
+  }
+
   /**
    * Narrowed interface to WorkManager that is made available to tasks it is managing.
    */
   public class WorkerBee {
     public void addNewForeman(final Foreman foreman) {
       queries.put(foreman.getQueryId(), foreman);
-      executor.execute(new SelfCleaningRunnable(foreman) {
-        @Override
-        protected void cleanup() {
-          queries.remove(foreman.getQueryId(), foreman);
-        }
-      });
+
+      // We're relying on the Foreman to clean itself up with retireForeman().
+      executor.execute(foreman);
+    }
+
+    /**
+     * Remove the given Foreman from the running query list.
+     *
+     * <p>The running query list is a bit of a misnomer, because it doesn't
+     * necessarily mean that {@link org.apache.drill.exec.work.foreman.Foreman#run()}
+     * is executing. That only lasts for the duration of query setup, after which
+     * the Foreman instance survives as a state machine that reacts to events
+     * from the local root fragment as well as RPC responses from remote Drillbits.</p>
+     *
+     * @param foreman the Foreman to retire
+     */
+    public void retireForeman(final Foreman foreman) {
+      Preconditions.checkNotNull(foreman);
+
+      final QueryId queryId = foreman.getQueryId();
+      final boolean wasRemoved = queries.remove(queryId, foreman);
+      if (!wasRemoved) {
+        logger.warn("Couldn't find retiring Foreman for query " + queryId);
+//        throw new IllegalStateException("Couldn't find retiring Foreman for query " + queryId);
+      }
+
+      indicateIfSafeToExit();
     }
 
     public Foreman getForemanForQueryId(final QueryId queryId) {
@@ -200,6 +263,7 @@ public class WorkManager implements AutoCloseable {
         @Override
         protected void cleanup() {
           runningFragments.remove(fragmentHandle);
+          indicateIfSafeToExit();
         }
       });
     }
