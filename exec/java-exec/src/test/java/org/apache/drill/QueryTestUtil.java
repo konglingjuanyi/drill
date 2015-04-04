@@ -18,6 +18,7 @@
 package org.apache.drill;
 
 import java.util.List;
+import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,7 +30,7 @@ import org.apache.drill.exec.client.PrintingResultsListener;
 import org.apache.drill.exec.client.QuerySubmitter.Format;
 import org.apache.drill.exec.proto.UserBitShared.QueryType;
 import org.apache.drill.exec.rpc.RpcException;
-import org.apache.drill.exec.rpc.user.QueryResultBatch;
+import org.apache.drill.exec.rpc.user.QueryDataBatch;
 import org.apache.drill.exec.rpc.user.UserResultsListener;
 import org.apache.drill.exec.server.RemoteServiceSet;
 import org.apache.drill.exec.util.VectorUtil;
@@ -50,20 +51,20 @@ public class QueryTestUtil {
    * @param drillConfig
    * @param remoteServiceSet remote service set
    * @param maxWidth maximum width per node
+   * @param props Connection properties contains properties such as "user", "password", "schema" etc
    * @return the newly created client
    * @throws RpcException if there is a problem setting up the client
    */
-  public static DrillClient createClient(
-      final DrillConfig drillConfig, final RemoteServiceSet remoteServiceSet, final int maxWidth)
-      throws RpcException {
+  public static DrillClient createClient(final DrillConfig drillConfig, final RemoteServiceSet remoteServiceSet,
+      final int maxWidth, final Properties props) throws RpcException {
     final DrillClient drillClient = new DrillClient(drillConfig, remoteServiceSet.getCoordinator());
-    drillClient.connect();
+    drillClient.connect(props);
 
-    final List<QueryResultBatch> results = drillClient.runQuery(
+    final List<QueryDataBatch> results = drillClient.runQuery(
         QueryType.SQL, String.format("alter session set `%s` = %d",
             ExecConstants.MAX_WIDTH_PER_NODE_KEY, maxWidth));
-    for (QueryResultBatch queryResultBatch : results) {
-      queryResultBatch.release();
+    for (QueryDataBatch queryDataBatch : results) {
+      queryDataBatch.release();
     }
 
     return drillClient;
