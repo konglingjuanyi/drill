@@ -1,4 +1,4 @@
-/**
+/*******************************************************************************
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -14,22 +14,22 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-package org.apache.drill.jdbc;
+ ******************************************************************************/
+package org.apache.drill.exec.store;
 
-import java.sql.Connection;
+public class PartitionNotFoundException extends Exception {
 
-/**
- * A factory used to get open {@link Connection} instances.
- */
-public interface ConnectionFactory {
+  public PartitionNotFoundException() { }
 
-  /**
-   * Gets an open {@link Connection} based on given {@link ConnectionInfo
-   * connection parameters}.
-   *
-   * @param info the connection parameters
-   * @throws Exception if factory fails to get a connection.
-   */
-  Connection getConnection(ConnectionInfo info) throws Exception;
+  public PartitionNotFoundException(String s) {
+    super(s);
+  }
+
+  public PartitionNotFoundException(Exception ex) {
+    super(ex);
+  }
+
+  public PartitionNotFoundException(String s, Exception ex) {
+    super(s, ex);
+  }
 }
