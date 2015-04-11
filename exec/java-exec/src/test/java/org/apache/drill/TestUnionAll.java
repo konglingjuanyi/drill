@@ -184,17 +184,17 @@ public class TestUnionAll extends BaseTestQuery{
 
   @Test
   public void testUnionAllViewExpandableStar() throws Exception {
-    test("use dfs.tmp");
+    test("use dfs_test.tmp");
     test("create view nation_view_testunionall as select n_name, n_nationkey from cp.`tpch/nation.parquet`;");
     test("create view region_view_testunionall as select r_name, r_regionkey from cp.`tpch/region.parquet`;");
 
-    String query1 = "(select * from dfs.tmp.`nation_view_testunionall`) " +
+    String query1 = "(select * from dfs_test.tmp.`nation_view_testunionall`) " +
                     "union all " +
-                    "(select * from dfs.tmp.`region_view_testunionall`) ";
+                    "(select * from dfs_test.tmp.`region_view_testunionall`) ";
 
     String query2 =  "(select r_name, r_regionkey from cp.`tpch/region.parquet`) " +
                      "union all " +
-                     "(select * from dfs.tmp.`nation_view_testunionall`)";
+                     "(select * from dfs_test.tmp.`nation_view_testunionall`)";
 
     try {
       testBuilder()
@@ -220,11 +220,11 @@ public class TestUnionAll extends BaseTestQuery{
 
   @Test(expected = UnsupportedRelOperatorException.class) // see DRILL-2002
   public void testUnionAllViewUnExpandableStar() throws Exception {
-    test("use dfs.tmp");
+    test("use dfs_test.tmp");
     test("create view nation_view_testunionall as select * from cp.`tpch/nation.parquet`;");
 
     try {
-      String query = "(select * from dfs.tmp.`nation_view_testunionall`) " +
+      String query = "(select * from dfs_test.tmp.`nation_view_testunionall`) " +
                      "union all (select * from cp.`tpch/region.parquet`)";
       test(query);
     } catch(Exception ex) {
@@ -237,7 +237,7 @@ public class TestUnionAll extends BaseTestQuery{
 
   @Test
   public void testDiffDataTypesAndModes() throws Exception {
-    test("use dfs.tmp");
+    test("use dfs_test.tmp");
     test("create view nation_view_testunionall as select n_name, n_nationkey from cp.`tpch/nation.parquet`;");
     test("create view region_view_testunionall as select r_name, r_regionkey from cp.`tpch/region.parquet`;");
 
@@ -458,5 +458,45 @@ public class TestUnionAll extends BaseTestQuery{
         .baselineValues("833")
         .baselineValues("99")
         .build().run();
+  }
+
+  @Test // see DRILL-2639
+  public void testUnionAllDiffTypesAtPlanning() throws Exception {
+    String query = "select count(c1) as ct from (select cast(r_regionkey as int) c1 from cp.`tpch/region.parquet`) " +
+        "union all " +
+        "(select cast(r_regionkey as int) c2 from cp.`tpch/region.parquet`)";
+
+    testBuilder()
+        .sqlQuery(query)
+        .ordered()
+        .baselineColumns("ct")
+        .baselineValues((long) 5)
+        .baselineValues((long) 0)
+        .baselineValues((long) 1)
+        .baselineValues((long) 2)
+        .baselineValues((long) 3)
+        .baselineValues((long) 4)
+        .build().run();
+  }
+
+  @Test // see DRILL-2612
+  public void testUnionAllRightEmptyJson() throws Exception {
+    String rootEmpty = FileUtils.getResourceAsFile("/project/pushdown/empty.json").toURI().toString();
+    String rootSimple = FileUtils.getResourceAsFile("/store/json/booleanData.json").toURI().toString();
+
+    String queryRightEmpty = String.format(
+        "select key from dfs_test.`%s` " +
+        "union all " +
+        "select key from dfs_test.`%s`",
+        rootSimple,
+        rootEmpty);
+
+    testBuilder()
+      .sqlQuery(queryRightEmpty)
+      .unOrdered()
+      .baselineColumns("key")
+      .baselineValues(true)
+      .baselineValues(false)
+      .build().run();
   }
 }
