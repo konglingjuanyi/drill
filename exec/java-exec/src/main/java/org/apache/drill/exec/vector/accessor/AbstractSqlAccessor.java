@@ -21,103 +21,101 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.sql.Date;
-import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
 
 import org.apache.drill.common.types.TypeProtos.MajorType;
 
-abstract class AbstractSqlAccessor implements SqlAccessor {
+public abstract class AbstractSqlAccessor implements SqlAccessor {
 
   @Override
-  public abstract boolean isNull(int index);
+  public abstract boolean isNull(int rowOffset);
 
   @Override
-  public BigDecimal getBigDecimal(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("BigDecimal");
+  public BigDecimal getBigDecimal(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("BigDecimal");
   }
 
   @Override
-  public boolean getBoolean(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("boolean");
+  public boolean getBoolean(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("boolean");
   }
 
   @Override
-  public byte getByte(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("byte");
+  public byte getByte(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("byte");
   }
 
   @Override
-  public byte[] getBytes(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("byte[]");
+  public byte[] getBytes(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("byte[]");
   }
 
   @Override
-  public Date getDate(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("Date");
+  public Date getDate(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("Date");
   }
 
   @Override
-  public double getDouble(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("double");
+  public double getDouble(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("double");
   }
 
   @Override
-  public float getFloat(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("float");
+  public float getFloat(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("float");
   }
 
   @Override
-  public int getInt(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("int");
+  public int getInt(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("int");
   }
 
   @Override
-  public long getLong(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("long");
+  public long getLong(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("long");
   }
 
   @Override
-  public short getShort(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("short");
+  public short getShort(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("short");
   }
 
   @Override
-  public InputStream getStream(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("InputStream");
+  public InputStream getStream(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("InputStream");
   }
 
   @Override
-  public char getChar(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("Char");
+  public char getChar(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("Char");
   }
 
   @Override
-  public Reader getReader(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("Reader");
+  public Reader getReader(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("Reader");
   }
 
   @Override
-  public String getString(int index) throws InvalidAccessException{
-    return getObject(index).toString();
+  public String getString(int rowOffset) throws InvalidAccessException{
+    return getObject(rowOffset).toString();
   }
 
   @Override
-  public Time getTime(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("Time");
+  public Time getTime(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("Time");
   }
 
   @Override
-  public Timestamp getTimestamp(int index) throws InvalidAccessException{
-    throw new InvalidAccessException("Timestamp");
+  public Timestamp getTimestamp(int rowOffset) throws InvalidAccessException{
+    throw newInvalidAccessException("Timestamp");
   }
 
-  abstract MajorType getType();
 
-
-  public class InvalidAccessException extends SQLException{
-    public InvalidAccessException(String name){
-      super(String.format("Requesting class of type %s for an object of type %s:%s is not allowed.", name, getType().getMinorType().name(), getType().getMode().name()));
-    }
+  private InvalidAccessException newInvalidAccessException(String name) {
+    return new InvalidAccessException(
+        String.format(
+            "Requesting value of type %s for an object of type %s:%s is not allowed.",
+             name, getType().getMinorType().name(), getType().getMode().name()));
   }
 }
