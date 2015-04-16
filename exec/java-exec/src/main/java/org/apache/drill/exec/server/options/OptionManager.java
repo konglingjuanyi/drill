@@ -18,6 +18,10 @@
 package org.apache.drill.exec.server.options;
 
 import org.apache.drill.exec.server.options.OptionValue.OptionType;
+import org.apache.drill.exec.server.options.TypeValidators.BooleanValidator;
+import org.apache.drill.exec.server.options.TypeValidators.DoubleValidator;
+import org.apache.drill.exec.server.options.TypeValidators.LongValidator;
+import org.apache.drill.exec.server.options.TypeValidators.StringValidator;
 import org.eigenbase.sql.SqlLiteral;
 
 public interface OptionManager extends Iterable<OptionValue> {
@@ -27,6 +31,11 @@ public interface OptionManager extends Iterable<OptionValue> {
   public OptionAdmin getAdmin();
   public OptionManager getSystemManager();
   public OptionList getOptionList();
+
+  public boolean getOption(BooleanValidator validator);
+  public double getOption(DoubleValidator validator);
+  public long getOption(LongValidator validator);
+  public String getOption(StringValidator validator);
 
   public interface OptionAdmin {
     public void registerOptionType(OptionValidator validator);

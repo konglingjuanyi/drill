@@ -22,10 +22,11 @@ import java.io.InputStream;
 
 import org.apache.drill.exec.vector.complex.writer.BaseWriter;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 public interface JsonProcessor {
 
   public static enum ReadState {
-    WRITE_FAILURE,
     END_OF_STREAM,
     WRITE_SUCCEED
   }
@@ -33,6 +34,7 @@ public interface JsonProcessor {
   ReadState write(BaseWriter.ComplexWriter writer) throws IOException;
 
   void setSource(InputStream is) throws IOException;
+  void setSource(JsonNode node);
 
   void ensureAtLeastOneField(BaseWriter.ComplexWriter writer);
 }

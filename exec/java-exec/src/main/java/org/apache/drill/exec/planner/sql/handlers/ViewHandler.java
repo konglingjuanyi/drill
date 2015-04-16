@@ -20,7 +20,9 @@ package org.apache.drill.exec.planner.sql.handlers;
 import java.io.IOException;
 import java.util.List;
 
+import net.hydromatic.optiq.Schema.TableType;
 import net.hydromatic.optiq.SchemaPlus;
+import net.hydromatic.optiq.Table;
 import net.hydromatic.optiq.tools.Planner;
 import net.hydromatic.optiq.tools.RelConversionException;
 import net.hydromatic.optiq.tools.ValidationException;
@@ -31,12 +33,10 @@ import org.apache.drill.exec.physical.PhysicalPlan;
 import org.apache.drill.exec.planner.sql.DirectPlan;
 import org.apache.drill.exec.planner.sql.parser.SqlCreateView;
 import org.apache.drill.exec.planner.sql.parser.SqlDropView;
-import org.apache.drill.exec.planner.types.DrillFixedRelDataTypeImpl;
 import org.apache.drill.exec.store.AbstractSchema;
 import org.apache.drill.exec.store.dfs.WorkspaceSchemaFactory.WorkspaceSchema;
 import org.apache.drill.exec.work.foreman.ForemanSetupException;
 import org.eigenbase.rel.RelNode;
-import org.eigenbase.reltype.RelDataType;
 import org.eigenbase.sql.SqlNode;
 
 import com.google.common.collect.ImmutableList;
@@ -64,6 +64,12 @@ public abstract class ViewHandler extends AbstractSqlHandler {
       SqlCreateView createView = unwrap(sqlNode, SqlCreateView.class);
 
       try {
+        // Store the viewSql as view def SqlNode is modified as part of the resolving the new table definition below.
+        final String viewSql = createView.getQuery().toString();
+
+        final RelNode newViewRelNode =
+            SqlHandlerUtil.resolveNewTableRel(true, planner, createView.getFieldNames(), createView.getQuery());
+
         SchemaPlus defaultSchema = context.getNewDefaultSchema();
         SchemaPlus schema = findSchema(context.getRootSchema(), defaultSchema, createView.getSchemaPath());
         AbstractSchema drillSchema = getDrillSchema(schema);
@@ -80,41 +86,29 @@ public abstract class ViewHandler extends AbstractSqlHandler {
           workspaceSchemaPath = getDrillSchema(defaultSchema).getSchemaPath();
         }
 
-        String viewSql = createView.getQuery().toString();
+        View view = new View(createView.getName(), viewSql, newViewRelNode.getRowType(), workspaceSchemaPath);
 
-        SqlNode validatedQuery = planner.validate(createView.getQuery());
-        RelNode validatedRelNode = planner.convert(validatedQuery);
+        final String viewName = view.getName();
+        final Table existingTable = SqlHandlerUtil.getTableFromSchema(drillSchema, viewName);
 
-        // If view's field list is specified then its size should match view's query field list size.
-        RelDataType queryRowType = validatedRelNode.getRowType();
-
-        List<String> viewFieldNames = createView.getFieldNames();
-        if (viewFieldNames.size() > 0) {
-          // number of fields match.
-          if (viewFieldNames.size() != queryRowType.getFieldCount()) {
-            return DirectPlan.createDirectPlan(context, false,
-                "View's field list and View's query field list have different counts.");
+        if (existingTable != null) {
+          if (existingTable.getJdbcTableType() != TableType.VIEW) {
+            // existing table is not a view
+            throw new ValidationException(
+                String.format("A non-view table with given name [%s] already exists in schema [%s]",
+                    viewName, schemaPath));
           }
 
-          // make sure View's query field list has no "*"
-          for (String field : queryRowType.getFieldNames()) {
-            if (field.equals("*")) {
-              return DirectPlan.createDirectPlan(context, false,
-                  "View's query field list has a '*', which is invalid when View's field list is specified.");
-            }
+          if (existingTable.getJdbcTableType() == TableType.VIEW && !createView.getReplace()) {
+            // existing table is a view and create view has no "REPLACE" clause
+            throw new ValidationException(
+                String.format("A view with given name [%s] already exists in schema [%s]",
+                    view.getName(), schemaPath));
           }
-
-          queryRowType = new DrillFixedRelDataTypeImpl(planner.getTypeFactory(), viewFieldNames);
         }
-
-        View view = new View(createView.getName(), viewSql, queryRowType, workspaceSchemaPath);
 
         boolean replaced;
         if (drillSchema instanceof WorkspaceSchema) {
-          WorkspaceSchema workspaceSchema = (WorkspaceSchema) drillSchema;
-          if (!createView.getReplace() && workspaceSchema.viewExists(view.getName())) {
-            return DirectPlan.createDirectPlan(context, false, "View with given name already exists in current schema");
-          }
           replaced = ((WorkspaceSchema) drillSchema).createView(view);
         } else {
           return DirectPlan.createDirectPlan(context, false, "Schema provided was not a workspace schema.");

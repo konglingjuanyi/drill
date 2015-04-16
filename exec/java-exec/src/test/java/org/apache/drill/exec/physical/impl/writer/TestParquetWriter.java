@@ -19,12 +19,14 @@ package org.apache.drill.exec.physical.impl.writer;
 
 import java.io.File;
 import java.math.BigDecimal;
+import java.sql.Date;
 
 import org.apache.drill.BaseTestQuery;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.joda.time.DateTime;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
@@ -340,7 +342,7 @@ public class TestParquetWriter extends BaseTestQuery {
   @Ignore
   @Test
   public void test958_sql_all_columns() throws Exception {
-    compareParquetReadersHyperVector("*",  "dfs.`/tmp/store_sales`");
+    compareParquetReadersHyperVector("*", "dfs.`/tmp/store_sales`");
     compareParquetReadersHyperVector("ss_addr_sk, ss_hdemo_sk", "dfs.`/tmp/store_sales`");
     // TODO - Drill 1388 - this currently fails, but it is an issue with project, not the reader, pulled out the physical plan
     // removed the unneeded project in the plan and ran it against both readers, they outputs matched
@@ -418,6 +420,76 @@ public class TestParquetWriter extends BaseTestQuery {
       Assert.assertEquals(fs.listStatus(path).length, 0);
     } finally {
       deleteTableIfExists(outputFile);
+    }
+  }
+
+  @Test // DRILL-2341
+  public void tableSchemaWhenSelectFieldsInDef_SelectFieldsInView() throws Exception {
+    final String newTblName = "testTableOutputSchema";
+
+    try {
+      final String ctas = String.format("CREATE TABLE dfs_test.tmp.%s(id, name, bday) AS SELECT " +
+          "cast(`employee_id` as integer), " +
+          "cast(`full_name` as varchar(100)), " +
+          "cast(`birth_date` as date) " +
+          "FROM cp.`employee.json` ORDER BY `employee_id` LIMIT 1", newTblName);
+
+      test(ctas);
+
+      testBuilder()
+          .unOrdered()
+          .sqlQuery(String.format("SELECT * FROM dfs_test.tmp.`%s`", newTblName))
+          .baselineColumns("id", "name", "bday")
+          .baselineValues(1, "Sheri Nowmer", new DateTime(Date.valueOf("1961-08-26").getTime()))
+          .go();
+    } finally {
+      deleteTableIfExists(newTblName);
+    }
+  }
+
+  @Test // DRILL-2422
+  public void createTableWhenATableWithSameNameAlreadyExists() throws Exception{
+    final String newTblName = "createTableWhenTableAlreadyExists";
+
+    try {
+      test("USE dfs_test.tmp");
+      final String ctas = String.format("CREATE TABLE %s AS SELECT * from cp.`region.json`", newTblName);
+
+      test(ctas);
+
+      testBuilder()
+          .unOrdered()
+          .sqlQuery(ctas)
+          .baselineColumns("ok", "summary")
+          .baselineValues(false,
+              String.format("Error: A table or view with given name [%s] already exists in schema [%s]",
+                  newTblName, "dfs_test.tmp"))
+          .go();
+    } finally {
+      deleteTableIfExists(newTblName);
+    }
+  }
+
+  @Test // DRILL-2422
+  public void createTableWhenAViewWithSameNameAlreadyExists() throws Exception{
+    final String newTblName = "createTableWhenAViewWithSameNameAlreadyExists";
+
+    try {
+      test("USE dfs_test.tmp");
+      final String createView = String.format("CREATE VIEW %s AS SELECT * from cp.`region.json`", newTblName);
+
+      test(createView);
+
+      testBuilder()
+          .unOrdered()
+          .sqlQuery(String.format("CREATE TABLE %s AS SELECT * FROM cp.`employee.json`", newTblName))
+          .baselineColumns("ok", "summary")
+          .baselineValues(false,
+              String.format("Error: A table or view with given name [%s] already exists in schema [%s]",
+                  newTblName, "dfs_test.tmp"))
+          .go();
+    } finally {
+      test("DROP VIEW " + newTblName);
     }
   }
 
