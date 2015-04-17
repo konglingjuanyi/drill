@@ -15,16 +15,30 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.drill.exec.work.fragment;
+package org.apache.drill.common.exceptions;
 
-import org.apache.drill.common.exceptions.UserException;
-import org.apache.drill.exec.proto.ExecProtos.FragmentHandle;
-import org.apache.drill.exec.proto.UserBitShared.FragmentState;
+import org.apache.drill.exec.proto.UserBitShared.DrillPBError;
 
 /**
- * The status handler is responsible for receiving changes in fragment status and propagating them back to the foreman.
+ * Wraps a DrillPBError object so we don't need to rebuilt it multiple times when sending it to the client. It also
+ * gives access to the original exception className and message.
  */
-public interface StatusReporter {
-  void fail(FragmentHandle handle, String message, UserException excep);
-  void stateChanged(FragmentHandle handle, FragmentState newState);
+public class UserRemoteException extends UserException {
+
+  private final DrillPBError error;
+
+  public UserRemoteException(DrillPBError error) {
+    super(null, "Drill Remote Exception", null);
+    this.error = error;
+  }
+
+  @Override
+  public String getMessage() {
+    return error.getMessage(); // we don't want super class to generate the error message
+  }
+
+  @Override
+  public DrillPBError getOrCreatePBError(boolean verbose) {
+    return error;
+  }
 }
