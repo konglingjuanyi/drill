@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.collect.ArrayListMultimap;
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.common.expression.SchemaPath;
@@ -157,15 +158,15 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
    */
   private ParquetGroupScan(ParquetGroupScan that) {
     super(that);
-    this.columns = that.columns;
-    this.endpointAffinities = that.endpointAffinities;
-    this.entries = that.entries;
+    this.columns = that.columns == null ? null : Lists.newArrayList(that.columns);
+    this.endpointAffinities = that.endpointAffinities == null ? null : Lists.newArrayList(that.endpointAffinities);
+    this.entries = that.entries == null ? null : Lists.newArrayList(that.entries);
     this.formatConfig = that.formatConfig;
     this.formatPlugin = that.formatPlugin;
     this.fs = that.fs;
-    this.mappings = that.mappings;
+    this.mappings = that.mappings == null ? null : ArrayListMultimap.create(that.mappings);
     this.rowCount = that.rowCount;
-    this.rowGroupInfos = that.rowGroupInfos;
+    this.rowGroupInfos = that.rowGroupInfos == null ? null : Lists.newArrayList(that.rowGroupInfos);
     this.selectionRoot = that.selectionRoot;
     this.columnValueCounts = that.columnValueCounts;
   }

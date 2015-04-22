@@ -21,25 +21,30 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 
+import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
+import org.apache.drill.exec.ExecConstants;
+import org.apache.drill.exec.expr.holders.IntHolder;
+import org.apache.drill.exec.planner.cost.DrillCostBase;
 import org.apache.drill.exec.planner.cost.DrillCostBase.DrillCostFactory;
 import org.apache.drill.exec.planner.physical.PrelUtil;
-import org.eigenbase.rel.InvalidRelException;
-import org.eigenbase.rel.JoinRelBase;
-import org.eigenbase.rel.JoinRelType;
-import org.eigenbase.rel.RelNode;
-import org.eigenbase.relopt.RelOptCluster;
-import org.eigenbase.relopt.RelOptCost;
-import org.eigenbase.relopt.RelOptPlanner;
-import org.eigenbase.relopt.RelTraitSet;
-import org.eigenbase.reltype.RelDataType;
-import org.eigenbase.rex.RexNode;
+import org.apache.calcite.rel.InvalidRelException;
+import org.apache.calcite.rel.core.Join;
+import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
+import org.apache.calcite.plan.RelTraitSet;
+import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rex.RexNode;
 
 import com.google.common.collect.Lists;
 
 /**
  * Base class for logical and physical Joins implemented in Drill.
  */
-public abstract class DrillJoinRelBase extends JoinRelBase implements DrillRelNode {
+public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
   protected List<Integer> leftKeys = Lists.newArrayList();
   protected List<Integer> rightKeys = Lists.newArrayList() ;
   private final double joinRowFactor;
@@ -52,10 +57,17 @@ public abstract class DrillJoinRelBase extends JoinRelBase implements DrillRelNo
 
   @Override
   public RelOptCost computeSelfCost(RelOptPlanner planner) {
-    if(condition.isAlwaysTrue()){
+    List<Integer> tmpLeftKeys = Lists.newArrayList();
+    List<Integer> tmpRightKeys = Lists.newArrayList();
+    RexNode remaining = RelOptUtil.splitJoinCondition(left, right, condition, tmpLeftKeys, tmpRightKeys);
+    if (!remaining.isAlwaysTrue() || (tmpLeftKeys.size() == 0 || tmpRightKeys.size() == 0)) {
       return ((DrillCostFactory)planner.getCostFactory()).makeInfiniteCost();
     }
-    return super.computeSelfCost(planner);
+
+    // We do not know which join method, i.e HASH-join or MergeJoin, will be used in Logical Planning.
+    // Here, we assume to use Hash-join, since this is a more commonly-used Join method in Drill.
+    return computeHashJoinCost(planner);
+    // return super.computeSelfCost(planner);
   }
 
   @Override
@@ -86,4 +98,37 @@ public abstract class DrillJoinRelBase extends JoinRelBase implements DrillRelNo
     return this.rightKeys;
   }
 
+  protected RelOptCost computeHashJoinCost(RelOptPlanner planner) {
+    double probeRowCount = RelMetadataQuery.getRowCount(this.getLeft());
+    double buildRowCount = RelMetadataQuery.getRowCount(this.getRight());
+
+    // cpu cost of hashing the join keys for the build side
+    double cpuCostBuild = DrillCostBase.HASH_CPU_COST * getRightKeys().size() * buildRowCount;
+    // cpu cost of hashing the join keys for the probe side
+    double cpuCostProbe = DrillCostBase.HASH_CPU_COST * getLeftKeys().size() * probeRowCount;
+
+    // cpu cost of evaluating each leftkey=rightkey join condition
+    double joinConditionCost = DrillCostBase.COMPARE_CPU_COST * this.getLeftKeys().size();
+
+    double factor = PrelUtil.getPlannerSettings(planner).getOptions()
+        .getOption(ExecConstants.HASH_JOIN_TABLE_FACTOR_KEY).float_val;
+    long fieldWidth = PrelUtil.getPlannerSettings(planner).getOptions()
+        .getOption(ExecConstants.AVERAGE_FIELD_WIDTH_KEY).num_val;
+
+    // table + hashValues + links
+    double memCost =
+        (
+            (fieldWidth * this.getRightKeys().size()) +
+                IntHolder.WIDTH +
+                IntHolder.WIDTH
+        ) * buildRowCount * factor;
+
+    double cpuCost = joinConditionCost * (probeRowCount) // probe size determine the join condition comparison cost
+        + cpuCostBuild + cpuCostProbe ;
+
+    DrillCostFactory costFactory = (DrillCostFactory) planner.getCostFactory();
+
+    return costFactory.makeCost(buildRowCount + probeRowCount, cpuCost, 0, 0, memCost);
+
+  }
 }

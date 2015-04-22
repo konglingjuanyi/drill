@@ -17,19 +17,21 @@
  */
 package org.apache.drill.exec.planner.sql.handlers;
 
-import net.hydromatic.optiq.Table;
-import net.hydromatic.optiq.tools.Planner;
-import net.hydromatic.optiq.tools.RelConversionException;
-import net.hydromatic.optiq.tools.ValidationException;
+import org.apache.calcite.schema.Table;
+import org.apache.calcite.tools.Planner;
+import org.apache.calcite.tools.RelConversionException;
 import org.apache.drill.common.exceptions.DrillException;
 import org.apache.drill.exec.planner.common.DrillRelOptUtil;
 import org.apache.drill.exec.planner.sql.DirectPlan;
 import org.apache.drill.exec.planner.types.DrillFixedRelDataTypeImpl;
 import org.apache.drill.exec.store.AbstractSchema;
-import org.eigenbase.rel.RelNode;
-import org.eigenbase.relopt.RelOptUtil;
-import org.eigenbase.reltype.RelDataType;
-import org.eigenbase.sql.SqlNode;
+
+import org.apache.calcite.tools.ValidationException;
+import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.sql.SqlNode;
+import org.apache.drill.exec.store.ischema.Records;
 
 import java.util.List;
 

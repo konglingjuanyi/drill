@@ -21,8 +21,8 @@ import java.io.IOException;
 import java.util.Collection;
 
 import io.netty.buffer.DrillBuf;
-import net.hydromatic.optiq.SchemaPlus;
-import net.hydromatic.optiq.jdbc.SimpleOptiqSchema;
+import org.apache.calcite.schema.SchemaPlus;
+import org.apache.calcite.jdbc.SimpleCalciteSchema;
 
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.exec.ExecConstants;
@@ -110,7 +110,7 @@ public class QueryContext implements AutoCloseable, UdfUtilities {
   }
 
   /**
-   * Return reference to default schema instance in a schema tree. Each {@link net.hydromatic.optiq.SchemaPlus}
+   * Return reference to default schema instance in a schema tree. Each {@link org.apache.calcite.schema.SchemaPlus}
    * instance can refer to its parent and its children. From the returned reference to default schema instance,
    * clients can traverse the entire schema tree and know the default schema where to look up the tables first.
    *
@@ -153,7 +153,7 @@ public class QueryContext implements AutoCloseable, UdfUtilities {
    */
   public SchemaPlus getRootSchema(SchemaConfig schemaConfig) {
     try {
-      final SchemaPlus rootSchema = SimpleOptiqSchema.createRootSchema(false);
+      final SchemaPlus rootSchema = SimpleCalciteSchema.createRootSchema(false);
       drillbitContext.getSchemaFactory().registerSchemas(schemaConfig, rootSchema);
       return rootSchema;
     } catch(IOException e) {

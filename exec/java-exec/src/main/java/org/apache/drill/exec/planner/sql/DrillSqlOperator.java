@@ -21,17 +21,17 @@ package org.apache.drill.exec.planner.sql;
 import com.google.common.base.Preconditions;
 import org.apache.drill.common.types.TypeProtos.MajorType;
 import org.apache.drill.common.types.TypeProtos.MinorType;
-import org.eigenbase.reltype.RelDataType;
-import org.eigenbase.reltype.RelDataTypeFactory;
-import org.eigenbase.sql.SqlCall;
-import org.eigenbase.sql.SqlFunction;
-import org.eigenbase.sql.SqlFunctionCategory;
-import org.eigenbase.sql.SqlIdentifier;
-import org.eigenbase.sql.SqlOperatorBinding;
-import org.eigenbase.sql.parser.SqlParserPos;
-import org.eigenbase.sql.type.SqlTypeName;
-import org.eigenbase.sql.validate.SqlValidator;
-import org.eigenbase.sql.validate.SqlValidatorScope;
+import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlFunctionCategory;
+import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlOperatorBinding;
+import org.apache.calcite.sql.parser.SqlParserPos;
+import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.sql.validate.SqlValidator;
+import org.apache.calcite.sql.validate.SqlValidatorScope;
 
 public class DrillSqlOperator extends SqlFunction {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(DrillSqlOperator.class);
@@ -58,7 +58,7 @@ public class DrillSqlOperator extends SqlFunction {
     if (MinorType.BIT.equals(returnType.getMinorType())) {
       return factory.createSqlType(SqlTypeName.BOOLEAN);
     }
-    return factory.createSqlType(SqlTypeName.ANY);
+    return factory.createTypeWithNullability(factory.createSqlType(SqlTypeName.ANY), true);
   }
 
   private RelDataType getNullableReturnDataType(final RelDataTypeFactory factory) {
@@ -81,10 +81,6 @@ public class DrillSqlOperator extends SqlFunction {
 
   @Override
   public RelDataType inferReturnType(SqlOperatorBinding opBinding) {
-    if (NONE.equals(returnType)) {
-      return super.inferReturnType(opBinding);
-    }
-
     return getNullableReturnDataType(opBinding.getTypeFactory());
   }
 }

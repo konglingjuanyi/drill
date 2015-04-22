@@ -20,28 +20,20 @@ package org.apache.drill.exec.planner.physical;
 import java.io.IOException;
 import java.util.List;
 
-import net.hydromatic.optiq.runtime.FlatLists;
-import org.apache.drill.common.expression.FieldReference;
+import org.apache.calcite.rel.core.Join;
 import org.apache.drill.common.logical.data.JoinCondition;
-import org.apache.drill.exec.ExecConstants;
-import org.apache.drill.exec.expr.holders.IntHolder;
 import org.apache.drill.exec.physical.base.PhysicalOperator;
 import org.apache.drill.exec.physical.config.HashJoinPOP;
-import org.apache.drill.exec.planner.cost.DrillCostBase;
-import org.apache.drill.exec.planner.cost.DrillCostBase.DrillCostFactory;
 import org.apache.drill.exec.record.BatchSchema.SelectionVectorMode;
-import org.eigenbase.rel.InvalidRelException;
-import org.eigenbase.rel.JoinRelBase;
-import org.eigenbase.rel.JoinRelType;
-import org.eigenbase.rel.RelNode;
-import org.eigenbase.rel.metadata.RelMetadataQuery;
-import org.eigenbase.relopt.RelOptCluster;
-import org.eigenbase.relopt.RelOptCost;
-import org.eigenbase.relopt.RelOptPlanner;
-import org.eigenbase.relopt.RelOptUtil;
-import org.eigenbase.relopt.RelTraitSet;
-import org.eigenbase.rex.RexNode;
-import org.eigenbase.util.Pair;
+import org.apache.calcite.rel.InvalidRelException;
+import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
+import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.plan.RelTraitSet;
+import org.apache.calcite.rex.RexNode;
 
 import com.google.common.collect.Lists;
 
@@ -62,7 +54,7 @@ public class HashJoinPrel  extends JoinPrel {
   }
 
   @Override
-  public JoinRelBase copy(RelTraitSet traitSet, RexNode conditionExpr, RelNode left, RelNode right, JoinRelType joinType, boolean semiJoinDone) {
+  public Join copy(RelTraitSet traitSet, RexNode conditionExpr, RelNode left, RelNode right, JoinRelType joinType, boolean semiJoinDone) {
     try {
       return new HashJoinPrel(this.getCluster(), traitSet, left, right, conditionExpr, joinType, this.swapped);
     }catch (InvalidRelException e) {
@@ -75,34 +67,7 @@ public class HashJoinPrel  extends JoinPrel {
     if(PrelUtil.getSettings(getCluster()).useDefaultCosting()) {
       return super.computeSelfCost(planner).multiplyBy(.1);
     }
-    double probeRowCount = RelMetadataQuery.getRowCount(this.getLeft());
-    double buildRowCount = RelMetadataQuery.getRowCount(this.getRight());
-
-    // cpu cost of hashing the join keys for the build side
-    double cpuCostBuild = DrillCostBase.HASH_CPU_COST * getRightKeys().size() * buildRowCount;
-    // cpu cost of hashing the join keys for the probe side
-    double cpuCostProbe = DrillCostBase.HASH_CPU_COST * getLeftKeys().size() * probeRowCount;
-
-    // cpu cost of evaluating each leftkey=rightkey join condition
-    double joinConditionCost = DrillCostBase.COMPARE_CPU_COST * this.getLeftKeys().size();
-
-    double cpuCost = joinConditionCost * (buildRowCount + probeRowCount) + cpuCostBuild + cpuCostProbe;
-
-    double factor = PrelUtil.getPlannerSettings(planner).getOptions()
-      .getOption(ExecConstants.HASH_JOIN_TABLE_FACTOR_KEY).float_val;
-    long fieldWidth = PrelUtil.getPlannerSettings(planner).getOptions()
-      .getOption(ExecConstants.AVERAGE_FIELD_WIDTH_KEY).num_val;
-
-    // table + hashValues + links
-    double memCost =
-      (
-        (fieldWidth * this.getRightKeys().size()) +
-          IntHolder.WIDTH +
-          IntHolder.WIDTH
-      ) * buildRowCount * factor;
-
-    DrillCostFactory costFactory = (DrillCostFactory) planner.getCostFactory();
-    return costFactory.makeCost(buildRowCount + probeRowCount, cpuCost, 0, 0, memCost);
+    return computeHashJoinCost(planner);
   }
 
   @Override
