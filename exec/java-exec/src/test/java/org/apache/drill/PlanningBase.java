@@ -36,14 +36,15 @@ import org.apache.drill.exec.planner.physical.PlannerSettings;
 import org.apache.drill.exec.planner.sql.DrillOperatorTable;
 import org.apache.drill.exec.planner.sql.DrillSqlWorker;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
-import org.apache.drill.exec.proto.UserBitShared;
 import org.apache.drill.exec.rpc.user.UserSession;
 import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.server.options.QueryOptionManager;
 import org.apache.drill.exec.server.options.SessionOptionManager;
 import org.apache.drill.exec.server.options.SystemOptionManager;
+import org.apache.drill.exec.store.SchemaConfig;
 import org.apache.drill.exec.store.StoragePluginRegistry;
 import org.apache.drill.exec.store.sys.local.LocalPStoreProvider;
+import org.apache.drill.exec.testing.ExecutionControls;
 import org.junit.Rule;
 import org.junit.rules.TestRule;
 
@@ -77,8 +78,10 @@ public class PlanningBase extends ExecTest{
 
     final SystemOptionManager systemOptions = new SystemOptionManager(config, provider);
     systemOptions.init();
-    final SessionOptionManager sessionOptions = new SessionOptionManager(systemOptions);
+    final UserSession userSession = UserSession.Builder.newBuilder().withOptionManager(systemOptions).build();
+    final SessionOptionManager sessionOptions = (SessionOptionManager) userSession.getOptions();
     final QueryOptionManager queryOptions = new QueryOptionManager(sessionOptions);
+    final ExecutionControls executionControls = new ExecutionControls(queryOptions, DrillbitEndpoint.getDefaultInstance());
 
     new NonStrictExpectations() {
       {
@@ -100,7 +103,7 @@ public class PlanningBase extends ExecTest{
     final FunctionImplementationRegistry functionRegistry = new FunctionImplementationRegistry(config);
     final DrillOperatorTable table = new DrillOperatorTable(functionRegistry);
     final SchemaPlus root = SimpleOptiqSchema.createRootSchema(false);
-    registry.getSchemaFactory().registerSchemas(UserSession.Builder.newBuilder().setSupportComplexTypes(true).build(), root);
+    registry.getSchemaFactory().registerSchemas(SchemaConfig.newBuilder("foo", context).build(), root);
 
     new NonStrictExpectations() {
       {
@@ -126,6 +129,8 @@ public class PlanningBase extends ExecTest{
         result = table;
         context.getAllocator();
         result = allocator;
+        context.getExecutionControls();
+        result = executionControls;
       }
     };
 

@@ -29,12 +29,13 @@ import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.logical.FormatPluginConfig;
 import org.apache.drill.common.logical.StoragePluginConfig;
+import org.apache.drill.exec.ops.QueryContext;
 import org.apache.drill.exec.physical.base.AbstractGroupScan;
-import org.apache.drill.exec.rpc.user.UserSession;
 import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.store.AbstractStoragePlugin;
 import org.apache.drill.exec.store.ClassPathFileSystem;
 import org.apache.drill.exec.store.LocalSyncableFileSystem;
+import org.apache.drill.exec.store.SchemaConfig;
 import org.apache.drill.exec.store.StoragePluginOptimizerRule;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -44,6 +45,8 @@ import com.google.common.collect.ImmutableSet.Builder;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 
+import static org.apache.drill.exec.store.dfs.FileSystemSchemaFactory.DEFAULT_WS_NAME;
+
 /**
  * A Storage engine associated with a Hadoop FileSystem Implementation. Examples include HDFS, MapRFS, QuantacastFileSystem,
  * LocalFileSystem, as well Apache Drill specific CachedFileSystem, ClassPathFileSystem and LocalSyncableFileSystem.
@@ -51,26 +54,26 @@ import com.google.common.collect.Maps;
  * references to the FileSystem configuration and path management.
  */
 public class FileSystemPlugin extends AbstractStoragePlugin{
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FileSystemPlugin.class);
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FileSystemPlugin.class);
 
   private final FileSystemSchemaFactory schemaFactory;
-  private Map<String, FormatPlugin> formatPluginsByName;
-  private Map<FormatPluginConfig, FormatPlugin> formatPluginsByConfig;
-  private FileSystemConfig config;
-  private DrillbitContext context;
-  private final DrillFileSystem fs;
+  private final Map<String, FormatPlugin> formatPluginsByName;
+  private final Map<FormatPluginConfig, FormatPlugin> formatPluginsByConfig;
+  private final FileSystemConfig config;
+  private final DrillbitContext context;
+  private final Configuration fsConf;
 
   public FileSystemPlugin(FileSystemConfig config, DrillbitContext context, String name) throws ExecutionSetupException{
     try {
       this.config = config;
       this.context = context;
 
-      Configuration fsConf = new Configuration();
+      fsConf = new Configuration();
       fsConf.set(FileSystem.FS_DEFAULT_NAME_KEY, config.connection);
       fsConf.set("fs.classpath.impl", ClassPathFileSystem.class.getName());
       fsConf.set("fs.drill-local.impl", LocalSyncableFileSystem.class.getName());
-      fs = new DrillFileSystem(fsConf);
-      formatPluginsByName = FormatCreator.getFormatPlugins(context, fs, config);
+
+      formatPluginsByName = FormatCreator.getFormatPlugins(context, fsConf, config);
       List<FormatMatcher> matchers = Lists.newArrayList();
       formatPluginsByConfig = Maps.newHashMap();
       for (FormatPlugin p : formatPluginsByName.values()) {
@@ -78,17 +81,17 @@ public class FileSystemPlugin extends AbstractStoragePlugin{
         formatPluginsByConfig.put(p.getConfig(), p);
       }
 
-      boolean noWorkspace = config.workspaces == null || config.workspaces.isEmpty();
+      final boolean noWorkspace = config.workspaces == null || config.workspaces.isEmpty();
       List<WorkspaceSchemaFactory> factories = Lists.newArrayList();
       if (!noWorkspace) {
         for (Map.Entry<String, WorkspaceConfig> space : config.workspaces.entrySet()) {
-          factories.add(new WorkspaceSchemaFactory(context.getConfig(), this, space.getKey(), name, fs, space.getValue(), matchers));
+          factories.add(new WorkspaceSchemaFactory(context.getConfig(), this, space.getKey(), name, space.getValue(), matchers));
         }
       }
 
       // if the "default" workspace is not given add one.
-      if (noWorkspace || !config.workspaces.containsKey("default")) {
-        factories.add(new WorkspaceSchemaFactory(context.getConfig(), this, "default", name, fs, WorkspaceConfig.DEFAULT, matchers));
+      if (noWorkspace || !config.workspaces.containsKey(DEFAULT_WS_NAME)) {
+        factories.add(new WorkspaceSchemaFactory(context.getConfig(), this, DEFAULT_WS_NAME, name, WorkspaceConfig.DEFAULT, matchers));
       }
 
       this.schemaFactory = new FileSystemSchemaFactory(name, factories);
@@ -108,7 +111,8 @@ public class FileSystemPlugin extends AbstractStoragePlugin{
   }
 
   @Override
-  public AbstractGroupScan getPhysicalScan(JSONOptions selection, List<SchemaPath> columns) throws IOException {
+  public AbstractGroupScan getPhysicalScan(String userName, JSONOptions selection, List<SchemaPath> columns)
+      throws IOException {
     FormatSelection formatSelection = selection.getWith(context.getConfig(), FormatSelection.class);
     FormatPlugin plugin;
     if (formatSelection.getFormat() instanceof NamedFormatPluginConfig) {
@@ -119,12 +123,12 @@ public class FileSystemPlugin extends AbstractStoragePlugin{
     if (plugin == null) {
       throw new IOException(String.format("Failure getting requested format plugin named '%s'.  It was not one of the format plugins registered.", formatSelection.getFormat()));
     }
-    return plugin.getGroupScan(formatSelection.getSelection(), columns);
+    return plugin.getGroupScan(userName, formatSelection.getSelection(), columns);
   }
 
   @Override
-  public void registerSchemas(UserSession session, SchemaPlus parent) {
-    schemaFactory.registerSchemas(session, parent);
+  public void registerSchemas(SchemaConfig schemaConfig, SchemaPlus parent) throws IOException {
+    schemaFactory.registerSchemas(schemaConfig, parent);
   }
 
   public FormatPlugin getFormatPlugin(String name) {
@@ -151,5 +155,7 @@ public class FileSystemPlugin extends AbstractStoragePlugin{
     return setBuilder.build();
   }
 
-
+  public Configuration getFsConf() {
+    return fsConf;
+  }
 }

@@ -18,12 +18,14 @@
 package org.apache.drill.exec.store.parquet;
 
 import java.io.IOException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.logical.FormatPluginConfig;
@@ -40,6 +42,7 @@ import org.apache.drill.exec.physical.base.ScanStats.GroupScanProperty;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
 import org.apache.drill.exec.store.StoragePluginRegistry;
 import org.apache.drill.exec.store.TimedRunnable;
+import org.apache.drill.exec.store.dfs.DrillFileSystem;
 import org.apache.drill.exec.store.dfs.FileSelection;
 import org.apache.drill.exec.store.dfs.ReadEntryFromHDFS;
 import org.apache.drill.exec.store.dfs.ReadEntryWithPath;
@@ -49,17 +52,17 @@ import org.apache.drill.exec.store.schedule.AssignmentCreator;
 import org.apache.drill.exec.store.schedule.BlockMapBuilder;
 import org.apache.drill.exec.store.schedule.CompleteWork;
 import org.apache.drill.exec.store.schedule.EndpointByteMap;
+import org.apache.drill.exec.util.ImpersonationUtil;
 import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
+import org.apache.hadoop.security.UserGroupInformation;
 import parquet.hadoop.Footer;
 import parquet.hadoop.metadata.BlockMetaData;
 import parquet.hadoop.metadata.ColumnChunkMetaData;
 import parquet.hadoop.metadata.ParquetMetadata;
 import parquet.org.codehaus.jackson.annotate.JsonCreator;
 
-import com.codahale.metrics.Histogram;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 import com.fasterxml.jackson.annotation.JacksonInject;
@@ -76,23 +79,18 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ParquetGroupScan.class);
   static final MetricRegistry metrics = DrillMetrics.getInstance();
   static final String READ_FOOTER_TIMER = MetricRegistry.name(ParquetGroupScan.class, "readFooter");
-  static final String ENDPOINT_BYTES_TIMER = MetricRegistry.name(ParquetGroupScan.class, "endpointBytes");
-  static final String ASSIGNMENT_TIMER = MetricRegistry.name(ParquetGroupScan.class, "applyAssignments");
-  static final String ASSIGNMENT_AFFINITY_HIST = MetricRegistry.name(ParquetGroupScan.class, "assignmentAffinity");
 
-  final Histogram assignmentAffinityStats = metrics.histogram(ASSIGNMENT_AFFINITY_HIST);
-
-  private ListMultimap<Integer, RowGroupInfo> mappings;
-  private List<RowGroupInfo> rowGroupInfos;
   private final List<ReadEntryWithPath> entries;
   private final Stopwatch watch = new Stopwatch();
   private final ParquetFormatPlugin formatPlugin;
   private final ParquetFormatConfig formatConfig;
-  private final FileSystem fs;
-  private List<EndpointAffinity> endpointAffinities;
-  private String selectionRoot;
+  private final DrillFileSystem fs;
+  private final String selectionRoot;
 
+  private List<EndpointAffinity> endpointAffinities;
   private List<SchemaPath> columns;
+  private ListMultimap<Integer, RowGroupInfo> mappings;
+  private List<RowGroupInfo> rowGroupInfos;
 
   /*
    * total number of rows (obtained from parquet footer)
@@ -103,6 +101,75 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
    * total number of non-null value for each column in parquet files.
    */
   private Map<SchemaPath, Long> columnValueCounts;
+
+  @JsonCreator
+  public ParquetGroupScan( //
+      @JsonProperty("userName") String userName,
+      @JsonProperty("entries") List<ReadEntryWithPath> entries, //
+      @JsonProperty("storage") StoragePluginConfig storageConfig, //
+      @JsonProperty("format") FormatPluginConfig formatConfig, //
+      @JacksonInject StoragePluginRegistry engineRegistry, //
+      @JsonProperty("columns") List<SchemaPath> columns, //
+      @JsonProperty("selectionRoot") String selectionRoot //
+      ) throws IOException, ExecutionSetupException {
+    super(ImpersonationUtil.resolveUserName(userName));
+    this.columns = columns;
+    if (formatConfig == null) {
+      formatConfig = new ParquetFormatConfig();
+    }
+    Preconditions.checkNotNull(storageConfig);
+    Preconditions.checkNotNull(formatConfig);
+    this.formatPlugin = (ParquetFormatPlugin) engineRegistry.getFormatPlugin(storageConfig, formatConfig);
+    Preconditions.checkNotNull(formatPlugin);
+    this.fs = ImpersonationUtil.createFileSystem(getUserName(), formatPlugin.getFsConf());
+    this.formatConfig = formatPlugin.getConfig();
+    this.entries = entries;
+    this.selectionRoot = selectionRoot;
+    this.readFooterFromEntries();
+  }
+
+  public ParquetGroupScan( //
+      String userName,
+      FileSelection selection, //
+      ParquetFormatPlugin formatPlugin, //
+      String selectionRoot,
+      List<SchemaPath> columns) //
+          throws IOException {
+    super(userName);
+    this.formatPlugin = formatPlugin;
+    this.columns = columns;
+    this.formatConfig = formatPlugin.getConfig();
+    this.fs = ImpersonationUtil.createFileSystem(userName, formatPlugin.getFsConf());
+
+    this.entries = Lists.newArrayList();
+    List<FileStatus> files = selection.getFileStatusList(fs);
+    for (FileStatus file : files) {
+      entries.add(new ReadEntryWithPath(file.getPath().toString()));
+    }
+
+    this.selectionRoot = selectionRoot;
+
+    readFooter(files);
+  }
+
+  /*
+   * This is used to clone another copy of the group scan.
+   */
+  private ParquetGroupScan(ParquetGroupScan that) {
+    super(that);
+    this.columns = that.columns;
+    this.endpointAffinities = that.endpointAffinities;
+    this.entries = that.entries;
+    this.formatConfig = that.formatConfig;
+    this.formatPlugin = that.formatPlugin;
+    this.fs = that.fs;
+    this.mappings = that.mappings;
+    this.rowCount = that.rowCount;
+    this.rowGroupInfos = that.rowGroupInfos;
+    this.selectionRoot = that.selectionRoot;
+    this.columnValueCounts = that.columnValueCounts;
+  }
+
 
   public List<ReadEntryWithPath> getEntries() {
     return entries;
@@ -118,70 +185,8 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
     return this.formatPlugin.getStorageConfig();
   }
 
-  @JsonCreator
-  public ParquetGroupScan( //
-      @JsonProperty("entries") List<ReadEntryWithPath> entries, //
-      @JsonProperty("storage") StoragePluginConfig storageConfig, //
-      @JsonProperty("format") FormatPluginConfig formatConfig, //
-      @JacksonInject StoragePluginRegistry engineRegistry, //
-      @JsonProperty("columns") List<SchemaPath> columns, //
-      @JsonProperty("selectionRoot") String selectionRoot //
-      ) throws IOException, ExecutionSetupException {
-    this.columns = columns;
-    if (formatConfig == null) {
-      formatConfig = new ParquetFormatConfig();
-    }
-    Preconditions.checkNotNull(storageConfig);
-    Preconditions.checkNotNull(formatConfig);
-    this.formatPlugin = (ParquetFormatPlugin) engineRegistry.getFormatPlugin(storageConfig, formatConfig);
-    Preconditions.checkNotNull(formatPlugin);
-    this.fs = formatPlugin.getFileSystem();
-    this.formatConfig = formatPlugin.getConfig();
-    this.entries = entries;
-    this.selectionRoot = selectionRoot;
-    this.readFooterFromEntries();
-
-  }
-
   public String getSelectionRoot() {
     return selectionRoot;
-  }
-
-  public ParquetGroupScan(List<FileStatus> files, //
-      ParquetFormatPlugin formatPlugin, //
-      String selectionRoot,
-      List<SchemaPath> columns) //
-          throws IOException {
-    this.formatPlugin = formatPlugin;
-    this.columns = columns;
-    this.formatConfig = formatPlugin.getConfig();
-    this.fs = formatPlugin.getFileSystem();
-
-    this.entries = Lists.newArrayList();
-    for (FileStatus file : files) {
-      entries.add(new ReadEntryWithPath(file.getPath().toString()));
-    }
-
-    this.selectionRoot = selectionRoot;
-
-    readFooter(files);
-  }
-
-  /*
-   * This is used to clone another copy of the group scan.
-   */
-  private ParquetGroupScan(ParquetGroupScan that) {
-    this.columns = that.columns;
-    this.endpointAffinities = that.endpointAffinities;
-    this.entries = that.entries;
-    this.formatConfig = that.formatConfig;
-    this.formatPlugin = that.formatPlugin;
-    this.fs = that.fs;
-    this.mappings = that.mappings;
-    this.rowCount = that.rowCount;
-    this.rowGroupInfos = that.rowGroupInfos;
-    this.selectionRoot = that.selectionRoot;
-    this.columnValueCounts = that.columnValueCounts;
   }
 
   private void readFooterFromEntries()  throws IOException {
@@ -192,11 +197,26 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
     readFooter(files);
   }
 
-  private void readFooter(List<FileStatus> statuses) throws IOException {
+  private void readFooter(final List<FileStatus> statuses) {
+    final UserGroupInformation ugi = ImpersonationUtil.createProxyUgi(getUserName());
+    try {
+      ugi.doAs(new PrivilegedExceptionAction<Void>() {
+        public Void run() throws Exception {
+          readFooterHelper(statuses);
+          return null;
+        }
+      });
+    } catch (InterruptedException | IOException e) {
+      final String errMsg = String.format("Failed to read footer entries from parquet input files: %s", e.getMessage());
+      logger.error(errMsg, e);
+      throw new DrillRuntimeException(errMsg, e);
+    }
+  }
+
+  private void readFooterHelper(List<FileStatus> statuses) throws IOException {
     watch.reset();
     watch.start();
     Timer.Context tContext = metrics.timer(READ_FOOTER_TIMER).time();
-
 
     rowGroupInfos = Lists.newArrayList();
     long start = 0, length = 0;
@@ -205,7 +225,7 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
 
     ColumnChunkMetaData columnChunkMetaData;
 
-    List<Footer> footers = FooterGatherer.getFooters(formatPlugin.getHadoopConfig(), statuses, 16);
+    List<Footer> footers = FooterGatherer.getFooters(formatPlugin.getFsConf(), statuses, 16);
     for (Footer footer : footers) {
       int index = 0;
       ParquetMetadata metadata = footer.getParquetMetadata();
@@ -258,11 +278,6 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
     tContext.stop();
     watch.stop();
     logger.debug("Took {} ms to get row group infos", watch.elapsed(TimeUnit.MILLISECONDS));
-  }
-
-  @JsonIgnore
-  public FileSystem getFileSystem() {
-    return this.fs;
   }
 
   @Override
@@ -382,7 +397,8 @@ public class ParquetGroupScan extends AbstractFileGroupScan {
     Preconditions.checkArgument(!rowGroupsForMinor.isEmpty(),
         String.format("MinorFragmentId %d has no read entries assigned", minorFragmentId));
 
-    return new ParquetRowGroupScan(formatPlugin, convertToReadEntries(rowGroupsForMinor), columns, selectionRoot);
+    return new ParquetRowGroupScan(
+        getUserName(), formatPlugin, convertToReadEntries(rowGroupsForMinor), columns, selectionRoot);
   }
 
   private List<RowGroupReadEntry> convertToReadEntries(List<RowGroupInfo> rowGroups) {

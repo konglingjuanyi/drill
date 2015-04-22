@@ -24,11 +24,11 @@ import java.util.List;
 import java.util.Map;
 
 import net.hydromatic.optiq.SchemaPlus;
-import net.hydromatic.optiq.jdbc.SimpleOptiqSchema;
 
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
+import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.exception.ClassTransformationException;
 import org.apache.drill.exec.expr.ClassGenerator;
 import org.apache.drill.exec.expr.CodeGenerator;
@@ -49,6 +49,9 @@ import org.apache.drill.exec.server.options.FragmentOptionManager;
 import org.apache.drill.exec.server.options.OptionList;
 import org.apache.drill.exec.server.options.OptionManager;
 import org.apache.drill.exec.store.PartitionExplorer;
+import org.apache.drill.exec.store.SchemaConfig;
+import org.apache.drill.exec.testing.ExecutionControls;
+import org.apache.drill.exec.util.ImpersonationUtil;
 import org.apache.drill.exec.work.batch.IncomingBuffers;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -63,7 +66,8 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
 
   private final Map<DrillbitEndpoint, AccountingDataTunnel> tunnels = Maps.newHashMap();
   private final DrillbitContext context;
-  private final UserClientConnection connection;
+  private final UserClientConnection connection; // is null if this context is for non-root fragment
+  private final QueryContext queryContext; // is null if this context is for non-root fragment
   private final FragmentStats stats;
   private final FunctionImplementationRegistry funcRegistry;
   private final BufferAllocator allocator;
@@ -73,6 +77,7 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
   private final OptionManager fragmentOptions;
   private final BufferManager bufferManager;
   private ExecutorState executorState;
+  private final ExecutionControls executionControls;
 
   private final SendingAccountor sendingAccountor = new SendingAccountor();
   private final Consumer<RpcException> exceptionConsumer = new Consumer<RpcException>() {
@@ -85,10 +90,34 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
   private final RpcOutcomeListener<Ack> statusHandler = new StatusHandler(exceptionConsumer, sendingAccountor);
   private final AccountingUserConnection accountingUserConnection;
 
+  /**
+   * Create a FragmentContext instance for non-root fragment.
+   *
+   * @param dbContext DrillbitContext.
+   * @param fragment Fragment implementation.
+   * @param funcRegistry FunctionImplementationRegistry.
+   * @throws ExecutionSetupException
+   */
   public FragmentContext(final DrillbitContext dbContext, final PlanFragment fragment,
+      final FunctionImplementationRegistry funcRegistry) throws ExecutionSetupException {
+    this(dbContext, fragment, null, null, funcRegistry);
+  }
+
+  /**
+   * Create a FragmentContext instance for root fragment.
+   *
+   * @param dbContext DrillbitContext.
+   * @param fragment Fragment implementation.
+   * @param queryContext QueryContext.
+   * @param connection UserClientConnection.
+   * @param funcRegistry FunctionImplementationRegistry.
+   * @throws ExecutionSetupException
+   */
+  public FragmentContext(final DrillbitContext dbContext, final PlanFragment fragment, final QueryContext queryContext,
       final UserClientConnection connection, final FunctionImplementationRegistry funcRegistry)
     throws ExecutionSetupException {
     this.context = dbContext;
+    this.queryContext = queryContext;
     this.connection = connection;
     this.accountingUserConnection = new AccountingUserConnection(connection, sendingAccountor, statusHandler);
     this.fragment = fragment;
@@ -98,17 +127,19 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
     logger.debug("Getting initial memory allocation of {}", fragment.getMemInitial());
     logger.debug("Fragment max allocation: {}", fragment.getMemMax());
 
-    try {
-      final OptionList list;
-      if (!fragment.hasOptionsJson() || fragment.getOptionsJson().isEmpty()) {
-        list = new OptionList();
-      } else {
+    final OptionList list;
+    if (!fragment.hasOptionsJson() || fragment.getOptionsJson().isEmpty()) {
+      list = new OptionList();
+    } else {
+      try {
         list = dbContext.getConfig().getMapper().readValue(fragment.getOptionsJson(), OptionList.class);
+      } catch (final Exception e) {
+        throw new ExecutionSetupException("Failure while reading plan options.", e);
       }
-      fragmentOptions = new FragmentOptionManager(context.getOptionManager(), list);
-    } catch (final Exception e) {
-      throw new ExecutionSetupException("Failure while reading plan options.", e);
     }
+    fragmentOptions = new FragmentOptionManager(context.getOptionManager(), list);
+
+    executionControls = new ExecutionControls(fragmentOptions, dbContext.getEndpoint());
 
     // Add the fragment context to the root allocator.
     // The QueryManager will call the root allocator to recalculate all the memory limits for all the fragments
@@ -122,6 +153,15 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
 
     stats = new FragmentStats(allocator, dbContext.getMetrics(), fragment.getAssignment());
     bufferManager = new BufferManager(this.allocator, this);
+  }
+
+  /**
+   * TODO: Remove this constructor when removing the SimpleRootExec (DRILL-2097). This is kept only to avoid modifying
+   * the long list of test files.
+   */
+  public FragmentContext(DrillbitContext dbContext, PlanFragment fragment, UserClientConnection connection,
+      FunctionImplementationRegistry funcRegistry) throws ExecutionSetupException {
+    this(dbContext, fragment, null, connection, funcRegistry);
   }
 
   public OptionManager getOptions() {
@@ -158,15 +198,24 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
   }
 
   public SchemaPlus getRootSchema() {
-    if (connection == null) {
+    if (queryContext == null) {
       fail(new UnsupportedOperationException("Schema tree can only be created in root fragment. " +
           "This is a non-root fragment."));
       return null;
     }
 
-    final SchemaPlus root = SimpleOptiqSchema.createRootSchema(false);
-    context.getStorage().getSchemaFactory().registerSchemas(connection.getSession(), root);
-    return root;
+    final boolean isImpersonationEnabled = isImpersonationEnabled();
+    // If impersonation is enabled, we want to view the schema as query user and suppress authorization errors. As for
+    // InfoSchema purpose we want to show tables the user has permissions to list or query. If  impersonation is
+    // disabled view the schema as Drillbit process user and throw authorization errors to client.
+    SchemaConfig schemaConfig = SchemaConfig
+        .newBuilder(
+            isImpersonationEnabled ? queryContext.getQueryUserName() : ImpersonationUtil.getProcessUserName(),
+            queryContext)
+        .setIgnoreAuthErrors(isImpersonationEnabled)
+        .build();
+
+    return queryContext.getRootSchema(schemaConfig);
   }
 
   /**
@@ -286,6 +335,24 @@ public class FragmentContext implements AutoCloseable, UdfUtilities {
 
   public void setFragmentLimit(final long limit) {
     allocator.setFragmentLimit(limit);
+  }
+
+  public ExecutionControls getExecutionControls() {
+    return executionControls;
+  }
+
+  public String getQueryUserName() {
+    return fragment.getCredentials().getUserName();
+  }
+
+  public boolean isImpersonationEnabled() {
+    // TODO(DRILL-2097): Until SimpleRootExec tests are removed, we need to consider impersonation disabled if there is
+    // no config
+    if (getConfig() == null) {
+      return false;
+    }
+
+    return getConfig().getBoolean(ExecConstants.IMPERSONATION_ENABLED);
   }
 
   @Override

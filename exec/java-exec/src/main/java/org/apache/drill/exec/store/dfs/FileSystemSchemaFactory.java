@@ -27,10 +27,11 @@ import net.hydromatic.optiq.Function;
 import net.hydromatic.optiq.SchemaPlus;
 import net.hydromatic.optiq.Table;
 
+import org.apache.drill.exec.ops.QueryContext;
 import org.apache.drill.exec.planner.logical.CreateTableEntry;
-import org.apache.drill.exec.rpc.user.UserSession;
 import org.apache.drill.exec.store.AbstractSchema;
 import org.apache.drill.exec.store.PartitionNotFoundException;
+import org.apache.drill.exec.store.SchemaConfig;
 import org.apache.drill.exec.store.SchemaFactory;
 import org.apache.drill.exec.store.dfs.WorkspaceSchemaFactory.WorkspaceSchema;
 
@@ -44,12 +45,12 @@ import org.apache.hadoop.fs.Path;
  * This is the top level schema that responds to root level path requests. Also supports
  */
 public class FileSystemSchemaFactory implements SchemaFactory{
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FileSystemSchemaFactory.class);
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FileSystemSchemaFactory.class);
+
+  public static final String DEFAULT_WS_NAME = "default";
 
   private List<WorkspaceSchemaFactory> factories;
   private String schemaName;
-  private final String defaultSchemaName = "default";
-
 
   public FileSystemSchemaFactory(String schemaName, List<WorkspaceSchemaFactory> factories) {
     super();
@@ -58,8 +59,8 @@ public class FileSystemSchemaFactory implements SchemaFactory{
   }
 
   @Override
-  public void registerSchemas(UserSession session, SchemaPlus parent) {
-    FileSystemSchema schema = new FileSystemSchema(schemaName, session);
+  public void registerSchemas(SchemaConfig schemaConfig, SchemaPlus parent) throws IOException {
+    FileSystemSchema schema = new FileSystemSchema(schemaName, schemaConfig);
     SchemaPlus plusOfThis = parent.add(schema.getName(), schema);
     schema.setPlus(plusOfThis);
   }
@@ -69,14 +70,14 @@ public class FileSystemSchemaFactory implements SchemaFactory{
     private final WorkspaceSchema defaultSchema;
     private final Map<String, WorkspaceSchema> schemaMap = Maps.newHashMap();
 
-    public FileSystemSchema(String name, UserSession session) {
+    public FileSystemSchema(String name, SchemaConfig schemaConfig) throws IOException {
       super(ImmutableList.<String>of(), name);
       for(WorkspaceSchemaFactory f :  factories){
-        WorkspaceSchema s = f.createSchema(getSchemaPath(), session);
+        WorkspaceSchema s = f.createSchema(getSchemaPath(), schemaConfig);
         schemaMap.put(s.getName(), s);
       }
 
-      defaultSchema = schemaMap.get(defaultSchemaName);
+      defaultSchema = schemaMap.get(DEFAULT_WS_NAME);
     }
 
     void setPlus(SchemaPlus plusOfThis){

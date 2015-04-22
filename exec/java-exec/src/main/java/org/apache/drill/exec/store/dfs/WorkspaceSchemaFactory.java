@@ -20,6 +20,7 @@ package org.apache.drill.exec.store.dfs;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -30,6 +31,7 @@ import net.hydromatic.optiq.Table;
 
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
+import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.dotdrill.DotDrillFile;
 import org.apache.drill.exec.dotdrill.DotDrillType;
@@ -41,9 +43,11 @@ import org.apache.drill.exec.planner.logical.DrillViewTable;
 import org.apache.drill.exec.planner.logical.DynamicDrillTable;
 import org.apache.drill.exec.planner.logical.FileSystemCreateTableEntry;
 import org.apache.drill.exec.planner.sql.ExpandingConcurrentMap;
-import org.apache.drill.exec.rpc.user.UserSession;
 import org.apache.drill.exec.store.AbstractSchema;
 import org.apache.drill.exec.store.PartitionNotFoundException;
+import org.apache.drill.exec.store.SchemaConfig;
+import org.apache.drill.exec.util.ImpersonationUtil;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 
@@ -51,15 +55,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.security.AccessControlException;
 
-public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFactory<String, DrillTable> {
+public class WorkspaceSchemaFactory {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(WorkspaceSchemaFactory.class);
 
   private final List<FormatMatcher> fileMatchers;
   private final List<FormatMatcher> dirMatchers;
 
   private final WorkspaceConfig config;
-  private final DrillFileSystem fs;
+  private final Configuration fsConf;
   private final DrillConfig drillConfig;
   private final String storageEngineName;
   private final String schemaName;
@@ -67,9 +73,9 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
   private final ObjectMapper mapper;
 
   public WorkspaceSchemaFactory(DrillConfig drillConfig, FileSystemPlugin plugin, String schemaName,
-      String storageEngineName, DrillFileSystem fileSystem, WorkspaceConfig config,
-      List<FormatMatcher> formatMatchers) throws ExecutionSetupException, IOException {
-    this.fs = fileSystem;
+      String storageEngineName, WorkspaceConfig config, List<FormatMatcher> formatMatchers)
+    throws ExecutionSetupException, IOException {
+    this.fsConf = plugin.getFsConf();
     this.plugin = plugin;
     this.drillConfig = drillConfig;
     this.config = config;
@@ -95,7 +101,7 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
             defaultInputFormat, storageEngineName, schemaName);
         throw new ExecutionSetupException(message);
       }
-      final FormatMatcher fallbackMatcher = new BasicFormatMatcher(formatPlugin, fs,
+      final FormatMatcher fallbackMatcher = new BasicFormatMatcher(formatPlugin,
           ImmutableList.of(Pattern.compile(".*")), ImmutableList.<MagicString>of());
       fileMatchers.add(fallbackMatcher);
     }
@@ -105,58 +111,27 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
     return DotDrillType.VIEW.getPath(config.getLocation(), name);
   }
 
-  public WorkspaceSchema createSchema(List<String> parentSchemaPath, UserSession session) {
-    return new WorkspaceSchema(parentSchemaPath, schemaName, session);
+  public WorkspaceSchema createSchema(List<String> parentSchemaPath, SchemaConfig schemaConfig) throws  IOException {
+    return new WorkspaceSchema(parentSchemaPath, schemaName, schemaConfig);
   }
 
-  @Override
-  public DrillTable create(String key) {
-    try {
+  public class WorkspaceSchema extends AbstractSchema implements ExpandingConcurrentMap.MapValueFactory<String, DrillTable> {
+    private final ExpandingConcurrentMap<String, DrillTable> tables = new ExpandingConcurrentMap<>(this);
+    private final SchemaConfig schemaConfig;
+    private final DrillFileSystem fs;
 
-      FileSelection fileSelection = FileSelection.create(fs, config.getLocation(), key);
-      if (fileSelection == null) {
-        return null;
-      }
-
-      if (fileSelection.containsDirectories(fs)) {
-        for (FormatMatcher m : dirMatchers) {
-          try {
-            Object selection = m.isReadable(fileSelection);
-            if (selection != null) {
-              return new DynamicDrillTable(plugin, storageEngineName, selection);
-            }
-          } catch (IOException e) {
-            logger.debug("File read failed.", e);
-          }
-        }
-        fileSelection = fileSelection.minusDirectories(fs);
-      }
-
-      for (FormatMatcher m : fileMatchers) {
-        Object selection = m.isReadable(fileSelection);
-        if (selection != null) {
-          return new DynamicDrillTable(plugin, storageEngineName, selection);
-        }
-      }
-      return null;
-
-    } catch (IOException e) {
-      logger.debug("Failed to create DrillTable with root {} and name {}", config.getLocation(), key, e);
+    public WorkspaceSchema(List<String> parentSchemaPath, String wsName, SchemaConfig schemaConfig) throws IOException {
+      super(parentSchemaPath, wsName);
+      this.schemaConfig = schemaConfig;
+      this.fs = ImpersonationUtil.createFileSystem(schemaConfig.getUserName(), fsConf);
     }
-
-    return null;
-  }
-
-  @Override
-  public void destroy(DrillTable value) {
-  }
-
-  public class WorkspaceSchema extends AbstractSchema {
 
     public boolean createView(View view) throws Exception {
       Path viewPath = getViewPath(view.getName());
       boolean replaced = fs.exists(viewPath);
-      try (OutputStream stream = fs.create(viewPath)) {
+      final FsPermission viewPerms =
+          new FsPermission(schemaConfig.getOption(ExecConstants.NEW_VIEW_DEFAULT_PERMS_KEY).string_val);
+      try (OutputStream stream = DrillFileSystem.create(fs, viewPath, viewPerms)) {
         mapper.writeValue(stream, view);
       }
       return replaced;
@@ -177,22 +152,8 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
       return new SubDirectoryList(fileStatuses);
     }
 
-    public boolean viewExists(String viewName) throws Exception {
-      Path viewPath = getViewPath(viewName);
-      return fs.exists(viewPath);
-    }
-
     public void dropView(String viewName) throws IOException {
       fs.delete(getViewPath(viewName), false);
-    }
-
-    private ExpandingConcurrentMap<String, DrillTable> tables = new ExpandingConcurrentMap<>(WorkspaceSchemaFactory.this);
-
-    private UserSession session;
-
-    public WorkspaceSchema(List<String> parentSchemaPath, String name, UserSession session) {
-      super(parentSchemaPath, name);
-      this.session = session;
     }
 
     private Set<String> getViews() {
@@ -206,6 +167,14 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
         }
       } catch (UnsupportedOperationException e) {
         logger.debug("The filesystem for this workspace does not support this operation.", e);
+      } catch (AccessControlException e) {
+        if (!schemaConfig.getIgnoreAuthErrors()) {
+          logger.debug(e.getMessage());
+          throw UserException
+              .permissionError(e)
+              .message("Not authorized to list view tables in schema [%s]", getFullSchemaName())
+              .build();
+        }
       } catch (Exception e) {
         logger.warn("Failure while trying to list .view.drill files in workspace [{}]", getFullSchemaName(), e);
       }
@@ -218,7 +187,7 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
       return Sets.union(tables.keySet(), getViews());
     }
 
-    private View getView(DotDrillFile f) throws Exception{
+    private View getView(DotDrillFile f) throws IOException{
       assert f.getType() == DotDrillType.VIEW;
       return f.getView(drillConfig);
     }
@@ -231,19 +200,42 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
       }
 
       // then look for files that start with this name and end in .drill.
-      List<DotDrillFile> files;
+      List<DotDrillFile> files = Collections.EMPTY_LIST;
       try {
-        files = DotDrillUtil.getDotDrills(fs, new Path(config.getLocation()), name, DotDrillType.VIEW);
+        try {
+          files = DotDrillUtil.getDotDrills(fs, new Path(config.getLocation()), name, DotDrillType.VIEW);
+        } catch(AccessControlException e) {
+          if (!schemaConfig.getIgnoreAuthErrors()) {
+            logger.debug(e.getMessage());
+            throw UserException
+                .permissionError(e)
+                .message("Not authorized to list or query tables in schema [%s]", getFullSchemaName())
+                .build();
+          }
+        } catch(IOException e) {
+          logger.warn("Failure while trying to list view tables in workspace [{}]", name, getFullSchemaName(), e);
+        }
+
         for(DotDrillFile f : files) {
           switch(f.getType()) {
           case VIEW:
-            return new DrillViewTable(schemaPath, getView(f));
+            try {
+              return new DrillViewTable(getView(f), f.getOwner(), schemaConfig.getViewExpansionContext());
+            } catch (AccessControlException e) {
+              if (!schemaConfig.getIgnoreAuthErrors()) {
+                logger.debug(e.getMessage());
+                throw UserException
+                    .permissionError(e)
+                    .message("Not authorized to read view [%s] in schema [%s]", name, getFullSchemaName())
+                    .build();
+              }
+            } catch (IOException e) {
+              logger.warn("Failure while trying to load {}.view.drill file in workspace [{}]", name, getFullSchemaName(), e);
+            }
           }
         }
       } catch (UnsupportedOperationException e) {
         logger.debug("The filesystem for this workspace does not support this operation.", e);
-      } catch (Exception e) {
-        logger.warn("Failure while trying to load {}.view.drill file in workspace [{}]", name, getFullSchemaName(), e);
       }
 
       return tables.get(name);
@@ -264,7 +256,7 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
 
     @Override
     public CreateTableEntry createNewTable(String tableName) {
-      String storage = session.getOptions().getOption(ExecConstants.OUTPUT_FORMAT_OPTION).string_val;
+      String storage = schemaConfig.getOption(ExecConstants.OUTPUT_FORMAT_OPTION).string_val;
       FormatPlugin formatPlugin = plugin.getFormatPlugin(storage);
       if (formatPlugin == null) {
         throw new UnsupportedOperationException(
@@ -281,6 +273,56 @@ public class WorkspaceSchemaFactory implements ExpandingConcurrentMap.MapValueFa
     @Override
     public String getTypeName() {
       return FileSystemConfig.NAME;
+    }
+
+    @Override
+    public DrillTable create(String key) {
+      try {
+
+        FileSelection fileSelection = FileSelection.create(fs, config.getLocation(), key);
+        if (fileSelection == null) {
+          return null;
+        }
+
+        if (fileSelection.containsDirectories(fs)) {
+          for (FormatMatcher m : dirMatchers) {
+            try {
+              Object selection = m.isReadable(fs, fileSelection);
+              if (selection != null) {
+                return new DynamicDrillTable(plugin, storageEngineName, schemaConfig.getUserName(), selection);
+              }
+            } catch (IOException e) {
+              logger.debug("File read failed.", e);
+            }
+          }
+          fileSelection = fileSelection.minusDirectories(fs);
+        }
+
+        for (FormatMatcher m : fileMatchers) {
+          Object selection = m.isReadable(fs, fileSelection);
+          if (selection != null) {
+            return new DynamicDrillTable(plugin, storageEngineName, schemaConfig.getUserName(), selection);
+          }
+        }
+        return null;
+
+      } catch (AccessControlException e) {
+        if (!schemaConfig.getIgnoreAuthErrors()) {
+          logger.debug(e.getMessage());
+          throw UserException
+              .permissionError(e)
+              .message("Not authorized to read table [%s] in schema [%s]", key, getFullSchemaName())
+              .build();
+        }
+      } catch (IOException e) {
+        logger.debug("Failed to create DrillTable with root {} and name {}", config.getLocation(), key, e);
+      }
+
+      return null;
+    }
+
+    @Override
+    public void destroy(DrillTable value) {
     }
   }
 }
