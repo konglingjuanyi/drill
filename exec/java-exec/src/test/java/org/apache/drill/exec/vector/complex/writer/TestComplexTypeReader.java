@@ -221,4 +221,16 @@ public class TestComplexTypeReader extends BaseTestQuery{
   public void testNestedFlatten() throws Exception {
     test("select flatten(rl) from cp.`jsoninput/input2.json`");
   }
+
+  @Test //DRILL-2872.
+  public void testRepeatedJson() throws Exception {
+
+    final String query="select cast(convert_to(interests, 'JSON') as varchar(0)) as interests from cp.`complex_student.json`";
+    testBuilder()
+            .sqlQuery(query)
+            .unOrdered()
+            .jsonBaselineFile("DRILL-2872-result.json")
+            .go();
+  }
+
 }
