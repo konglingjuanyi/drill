@@ -30,12 +30,14 @@ import com.carrotsearch.hppc.cursors.ObjectLongCursor;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Maps;
 import org.apache.drill.common.exceptions.DrillRuntimeException;
+import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
 
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
+import org.apache.drill.exec.server.DrillbitContext;
 
 /**
  * The AssignmentCreator is responsible for assigning a set of work units to the available slices.
@@ -89,9 +91,14 @@ public class AssignmentCreator<T extends CompleteWork> {
    * @param units the list of work units to be assigned
    * @return A multimap that maps each minor fragment id to a list of work units
    */
-  public static <T extends CompleteWork> ListMultimap<Integer,T> getMappings(List<DrillbitEndpoint> incomingEndpoints, List<T> units) {
-    AssignmentCreator<T> creator = new AssignmentCreator(incomingEndpoints, units);
-    return creator.getMappings();
+  public static <T extends CompleteWork> ListMultimap<Integer,T> getMappings(List<DrillbitEndpoint> incomingEndpoints, List<T> units, DrillbitContext context) {
+    boolean useOldAssignmentCode = context == null ? false : context.getOptionManager().getOption(ExecConstants.USE_OLD_ASSIGNMENT_CREATOR).bool_val;
+    if (useOldAssignmentCode) {
+      return OldAssignmentCreator.getMappings(incomingEndpoints, units);
+    } else {
+      AssignmentCreator<T> creator = new AssignmentCreator(incomingEndpoints, units);
+      return creator.getMappings();
+    }
   }
 
   /**
@@ -247,14 +254,14 @@ public class AssignmentCreator<T extends CompleteWork> {
       FragIteratorWrapper wrapper = new FragIteratorWrapper();
       wrapper.iter = Iterators.cycle(mmap.get(endpoint));
       wrapper.maxCount = maxWork * mmap.get(endpoint).size();
-      wrapper.minCount = Math.max((maxWork - 1) * mmap.get(endpoint).size(), 1);
+      wrapper.minCount = Math.max(maxWork - 1, 1) * mmap.get(endpoint).size();
       map.put(endpoint, wrapper);
     }
     return map;
   }
 
   /**
-   * A struct that holds an fragment iterator and keeps track of how many units have been assigned, as well as the maximum
+   * A struct that holds a fragment iterator and keeps track of how many units have been assigned, as well as the maximum
    * number of assignment it will accept
    */
   private static class FragIteratorWrapper {
