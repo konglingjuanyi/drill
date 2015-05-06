@@ -48,7 +48,7 @@ import java.util.Properties;
 import java.util.concurrent.Executor;
 
 import org.apache.drill.jdbc.Driver;
-import org.apache.drill.jdbc.JdbcTest;
+import org.apache.drill.jdbc.JdbcTestBase;
 import org.apache.drill.jdbc.AlreadyClosedSqlException;
 
 /**
@@ -68,7 +68,7 @@ import org.apache.drill.jdbc.AlreadyClosedSqlException;
  *  secondary objects such as {@link Clob} or {@link Array}.
  * </p>
  */
-public class Drill2489CallsAfterCloseThrowExceptionsTest extends JdbcTest {
+public class Drill2489CallsAfterCloseThrowExceptionsTest extends JdbcTestBase {
 
   private static Connection closedConnection;
   private static Statement closedStatement;
@@ -77,7 +77,9 @@ public class Drill2489CallsAfterCloseThrowExceptionsTest extends JdbcTest {
 
   @BeforeClass
   public static void setUpConnection() throws Exception {
-    final Connection connection = new Driver().connect( "jdbc:drill:zk=local", JdbcAssert.getDefaultProperties() );
+    // (Note: Can't use JdbcTest's connect(...) for this test class.)
+    final Connection connection =
+        new Driver().connect( "jdbc:drill:zk=local", JdbcAssert.getDefaultProperties() );
     final Statement stmt = connection.createStatement();
     final ResultSet result =
         stmt.executeQuery( "SELECT * FROM INFORMATION_SCHEMA.CATALOGS" );

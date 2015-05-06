@@ -29,19 +29,21 @@ import org.junit.rules.TestRule;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 
 import org.apache.drill.common.util.TestTools;
-import org.apache.drill.jdbc.JdbcTest;
+import org.apache.drill.jdbc.Driver;
+import org.apache.drill.jdbc.JdbcTestBase;
 
 
 /**
  * Basic (spot-check/incomplete) tests for DRILL-2128 bugs (many
  * DatabaseMetaData.getColumns(...) result table problems).
  */
-public class Drill2128GetColumnsDataTypeNotTypeCodeIntBugsTest extends JdbcTest {
+public class Drill2128GetColumnsDataTypeNotTypeCodeIntBugsTest extends JdbcTestBase {
 
   private static Connection connection;
   private static DatabaseMetaData dbMetadata;
@@ -51,7 +53,13 @@ public class Drill2128GetColumnsDataTypeNotTypeCodeIntBugsTest extends JdbcTest 
 
   @BeforeClass
   public static void setUpConnection() throws Exception {
-    connection = connect( "jdbc:drill:zk=local" );
+    // Get JDBC connection to Drill:
+    // (Note: Can't use JdbcTest's connect(...) because JdbcTest closes
+    // Connection--and other JDBC objects--on test method failure, but this test
+    // class uses connection (and dependent DatabaseMetaData object) across
+    // methods.)
+    Driver.load();
+    connection = DriverManager.getConnection( "jdbc:drill:zk=local" );
     dbMetadata = connection.getMetaData();
   }
 
