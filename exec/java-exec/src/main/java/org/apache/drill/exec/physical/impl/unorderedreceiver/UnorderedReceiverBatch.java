@@ -80,7 +80,7 @@ public class UnorderedReceiverBatch implements CloseableRecordBatch {
     oContext = context.newOperatorContext(config, false);
     this.batchLoader = new RecordBatchLoader(oContext.getAllocator());
 
-    this.stats = context.getStats().getOperatorStats(new OpProfileDef(config.getOperatorId(), config.getOperatorType(), 1), null);
+    this.stats = oContext.getStats();
     this.stats.setLongStat(Metric.NUM_SENDERS, config.getNumSenders());
     this.config = config;
   }
@@ -169,6 +169,8 @@ public class UnorderedReceiverBatch implements CloseableRecordBatch {
 
       final RecordBatchDef rbd = batch.getHeader().getDef();
       final boolean schemaChanged = batchLoader.load(rbd, batch.getBody());
+      // TODO:  Clean:  DRILL-2933:  That load(...) no longer throws
+      // SchemaChangeException, so check/clean catch clause below.
       stats.addLongStat(Metric.BYTES_RECEIVED, batch.getByteCount());
 
       batch.release();

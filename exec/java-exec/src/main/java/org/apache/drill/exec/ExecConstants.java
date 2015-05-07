@@ -87,6 +87,7 @@ public interface ExecConstants {
   public static final String ENABLE_FRAGMENT_MEMORY_LIMIT = "drill.exec.memory.enable_frag_limit";
   public static final String FRAGMENT_MEM_OVERCOMMIT_FACTOR = "drill.exec.memory.frag_mem_overcommit_factor";
 
+  public static final String USE_LINUX_EPOLL = "drill.exec.enable-epoll";
 
   public static final String CLIENT_SUPPORT_COMPLEX_TYPES = "drill.client.supports-complex-types";
 
@@ -194,23 +195,19 @@ public interface ExecConstants {
   public static final String AVERAGE_FIELD_WIDTH_KEY = "planner.memory.average_field_width";
   public static final OptionValidator AVERAGE_FIELD_WIDTH = new PositiveLongValidator(AVERAGE_FIELD_WIDTH_KEY, Long.MAX_VALUE, 8);
 
-  public static final String ENABLE_QUEUE_KEY = "exec.queue.enable";
-  public static final OptionValidator ENABLE_QUEUE = new BooleanValidator(ENABLE_QUEUE_KEY, false);
-
-  public static final String LARGE_QUEUE_KEY = "exec.queue.large";
-  public static final OptionValidator LARGE_QUEUE_SIZE = new PositiveLongValidator(LARGE_QUEUE_KEY, 1000, 10);
-
-  public static final String SMALL_QUEUE_KEY = "exec.queue.small";
-  public static final OptionValidator SMALL_QUEUE_SIZE = new PositiveLongValidator(SMALL_QUEUE_KEY, 100000, 100);
-
-  public static final String QUEUE_THRESHOLD_KEY = "exec.queue.threshold";
-  public static final OptionValidator QUEUE_THRESHOLD_SIZE = new PositiveLongValidator(QUEUE_THRESHOLD_KEY, Long.MAX_VALUE, 30000000);
-
-  public static final String QUEUE_TIMEOUT_KEY = "exec.queue.timeout_millis";
-  public static final OptionValidator QUEUE_TIMEOUT = new PositiveLongValidator(QUEUE_TIMEOUT_KEY, Long.MAX_VALUE, 60*1000*5);
+  public static final BooleanValidator ENABLE_QUEUE = new BooleanValidator("exec.queue.enable", false);
+  public static final LongValidator LARGE_QUEUE_SIZE = new PositiveLongValidator("exec.queue.large", 1000, 10);
+  public static final LongValidator SMALL_QUEUE_SIZE = new PositiveLongValidator("exec.queue.small", 100000, 100);
+  public static final LongValidator QUEUE_THRESHOLD_SIZE = new PositiveLongValidator("exec.queue.threshold",
+      Long.MAX_VALUE, 30000000);
+  public static final LongValidator QUEUE_TIMEOUT = new PositiveLongValidator("exec.queue.timeout_millis",
+      Long.MAX_VALUE, 60 * 1000 * 5);
 
   public static final String ENABLE_VERBOSE_ERRORS_KEY = "exec.errors.verbose";
   public static final OptionValidator ENABLE_VERBOSE_ERRORS = new BooleanValidator(ENABLE_VERBOSE_ERRORS_KEY, false);
+
+  public static final String ENABLE_NEW_TEXT_READER_KEY = "exec.storage.enable_new_text_reader";
+  public static final OptionValidator ENABLE_NEW_TEXT_READER = new BooleanValidator(ENABLE_NEW_TEXT_READER_KEY, true);
 
   public static final String BOOTSTRAP_STORAGE_PLUGINS_FILE = "bootstrap-storage-plugins.json";
   public static final String MAX_LOADING_CACHE_SIZE_CONFIG = "drill.exec.compile.cache_max_size";
