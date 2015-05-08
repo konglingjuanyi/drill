@@ -80,8 +80,10 @@ public class SystemOptionManager extends BaseOptionManager {
       ExecConstants.PARQUET_RECORD_READER_IMPLEMENTATION_VALIDATOR,
       ExecConstants.JSON_READER_ALL_TEXT_MODE_VALIDATOR,
       ExecConstants.JSON_EXTENDED_TYPES,
+      ExecConstants.JSON_READ_NUMBERS_AS_DOUBLE_VALIDATOR,
       ExecConstants.FILESYSTEM_PARTITION_COLUMN_LABEL_VALIDATOR,
       ExecConstants.MONGO_READER_ALL_TEXT_MODE_VALIDATOR,
+      ExecConstants.MONGO_READER_READ_NUMBERS_AS_DOUBLE_VALIDATOR,
       ExecConstants.SLICE_TARGET_OPTION,
       ExecConstants.AFFINITY_FACTOR,
       ExecConstants.MAX_WIDTH_GLOBAL,
@@ -153,6 +155,16 @@ public class SystemOptionManager extends BaseOptionManager {
 
     // otherwise, return default.
     OptionValidator validator = knownOptions.get(name);
+    if(validator == null) {
+      return null;
+    } else {
+      return validator.getDefault();
+    }
+  }
+
+  @Override
+  public OptionValue getDefault(final String name) {
+    final OptionValidator validator = knownOptions.get(name);
     if(validator == null) {
       return null;
     } else {
