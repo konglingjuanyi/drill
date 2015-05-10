@@ -28,6 +28,7 @@ import org.apache.drill.exec.planner.cost.DrillCostBase;
 import org.apache.drill.exec.physical.impl.join.JoinUtils;
 import org.apache.drill.exec.physical.impl.join.JoinUtils.JoinCategory;
 import org.apache.drill.exec.planner.cost.DrillCostBase.DrillCostFactory;
+import org.apache.drill.exec.planner.cost.DrillRelOptCost;
 import org.apache.drill.exec.planner.physical.PrelUtil;
 import org.apache.calcite.rel.InvalidRelException;
 import org.apache.calcite.rel.core.Join;
@@ -51,7 +52,7 @@ public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
   private final double joinRowFactor;
 
   public DrillJoinRelBase(RelOptCluster cluster, RelTraitSet traits, RelNode left, RelNode right, RexNode condition,
-      JoinRelType joinType) throws InvalidRelException {
+      JoinRelType joinType){
     super(cluster, traits, left, right, condition, joinType, Collections.<String> emptySet());
     this.joinRowFactor = PrelUtil.getPlannerSettings(cluster.getPlanner()).getRowCountEstimateFactor();
   }
@@ -65,7 +66,19 @@ public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
           if (hasScalarSubqueryInput()) {
             return computeLogicalJoinCost(planner);
           } else {
-            return ((DrillCostFactory)planner.getCostFactory()).makeInfiniteCost();
+            /*
+             *  Why do we return non-infinite cost for CartsianJoin with non-scalar subquery, when LOPT planner is enabled?
+             *   - We do not want to turn on the two Join permutation rule : PushJoinPastThroughJoin.LEFT, RIGHT.
+             *   - As such, we may end up with filter on top of join, which will cause CanNotPlan in LogicalPlanning, if we
+             *   return infinite cost.
+             *   - Such filter on top of join might be pushed into JOIN, when LOPT planner is called.
+             *   - Return non-infinite cost will give LOPT planner a chance to try to push the filters.
+             */
+            if (PrelUtil.getPlannerSettings(planner).isHepJoinOptEnabled()) {
+             return computeCartesianJoinCost(planner);
+            } else {
+              return ((DrillCostFactory)planner.getCostFactory()).makeInfiniteCost();
+            }
           }
         } else {
           return computeLogicalJoinCost(planner);
@@ -109,6 +122,29 @@ public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
     return this.rightKeys;
   }
 
+  protected  RelOptCost computeCartesianJoinCost(RelOptPlanner planner) {
+    final double probeRowCount = RelMetadataQuery.getRowCount(this.getLeft());
+    final double buildRowCount = RelMetadataQuery.getRowCount(this.getRight());
+
+    final DrillCostFactory costFactory = (DrillCostFactory) planner.getCostFactory();
+
+    final double mulFactor = 10000; // This is a magic number,
+                                    // just to make sure Cartesian Join is more expensive
+                                    // than Non-Cartesian Join.
+
+    final int keySize = 1 ;  // assume having 1 join key, when estimate join cost.
+    final DrillCostBase cost = (DrillCostBase) computeHashJoinCostWithKeySize(planner, keySize).multiplyBy(mulFactor);
+
+    // Cartesian join row count will be product of two inputs. The other factors come from the above estimated DrillCost.
+    return costFactory.makeCost(
+        buildRowCount * probeRowCount,
+        cost.getCpu(),
+        cost.getIo(),
+        cost.getNetwork(),
+        cost.getMemory() );
+
+  }
+
   protected RelOptCost computeLogicalJoinCost(RelOptPlanner planner) {
     // During Logical Planning, although we don't care much about the actual physical join that will
     // be chosen, we do care about which table - bigger or smaller - is chosen as the right input
@@ -121,16 +157,26 @@ public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
   }
 
   protected RelOptCost computeHashJoinCost(RelOptPlanner planner) {
+      return computeHashJoinCostWithKeySize(planner, this.getLeftKeys().size());
+  }
+
+  /**
+   *
+   * @param planner  : Optimization Planner.
+   * @param keySize  : the # of join keys in join condition. Left key size should be equal to right key size.
+   * @return         : RelOptCost
+   */
+  private RelOptCost computeHashJoinCostWithKeySize(RelOptPlanner planner, int keySize) {
     double probeRowCount = RelMetadataQuery.getRowCount(this.getLeft());
     double buildRowCount = RelMetadataQuery.getRowCount(this.getRight());
 
     // cpu cost of hashing the join keys for the build side
-    double cpuCostBuild = DrillCostBase.HASH_CPU_COST * getRightKeys().size() * buildRowCount;
+    double cpuCostBuild = DrillCostBase.HASH_CPU_COST * keySize * buildRowCount;
     // cpu cost of hashing the join keys for the probe side
-    double cpuCostProbe = DrillCostBase.HASH_CPU_COST * getLeftKeys().size() * probeRowCount;
+    double cpuCostProbe = DrillCostBase.HASH_CPU_COST * keySize * probeRowCount;
 
     // cpu cost of evaluating each leftkey=rightkey join condition
-    double joinConditionCost = DrillCostBase.COMPARE_CPU_COST * this.getLeftKeys().size();
+    double joinConditionCost = DrillCostBase.COMPARE_CPU_COST * keySize;
 
     double factor = PrelUtil.getPlannerSettings(planner).getOptions()
         .getOption(ExecConstants.HASH_JOIN_TABLE_FACTOR_KEY).float_val;
@@ -140,7 +186,7 @@ public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
     // table + hashValues + links
     double memCost =
         (
-            (fieldWidth * this.getRightKeys().size()) +
+            (fieldWidth * keySize) +
                 IntHolder.WIDTH +
                 IntHolder.WIDTH
         ) * buildRowCount * factor;
@@ -151,8 +197,8 @@ public abstract class DrillJoinRelBase extends Join implements DrillRelNode {
     DrillCostFactory costFactory = (DrillCostFactory) planner.getCostFactory();
 
     return costFactory.makeCost(buildRowCount + probeRowCount, cpuCost, 0, 0, memCost);
-
   }
+
   private boolean hasScalarSubqueryInput() {
     if (JoinUtils.isScalarSubquery(this.getLeft())
         || JoinUtils.isScalarSubquery(this.getRight())) {
