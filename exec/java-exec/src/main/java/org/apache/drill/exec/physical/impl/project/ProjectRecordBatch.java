@@ -30,7 +30,6 @@ import org.apache.drill.common.expression.FieldReference;
 import org.apache.drill.common.expression.FunctionCall;
 import org.apache.drill.common.expression.FunctionCallFactory;
 import org.apache.drill.common.expression.LogicalExpression;
-import org.apache.drill.common.expression.PathSegment;
 import org.apache.drill.common.expression.PathSegment.NameSegment;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.expression.ValueExpressions;
@@ -64,6 +63,7 @@ import org.apache.drill.exec.record.VectorWrapper;
 import org.apache.drill.exec.vector.AllocationHelper;
 import org.apache.drill.exec.vector.FixedWidthVector;
 import org.apache.drill.exec.vector.ValueVector;
+import org.apache.drill.exec.vector.complex.AbstractContainerVector;
 import org.apache.drill.exec.vector.complex.writer.BaseWriter.ComplexWriter;
 
 import com.carrotsearch.hppc.IntOpenHashSet;
@@ -80,7 +80,6 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
   private boolean hasRemainder = false;
   private int remainderIndex = 0;
   private int recordCount;
-  private final boolean buildingSchema = true;
 
   private static final String EMPTY_STRING = "";
   private boolean first = true;
@@ -144,7 +143,10 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
         IterOutcome next = null;
         while (incomingRecordCount == 0) {
           next = next(incoming);
-          if (next != IterOutcome.OK && next != IterOutcome.OK_NEW_SCHEMA) {
+          if (next == IterOutcome.OUT_OF_MEMORY) {
+            outOfMemory = true;
+            return next;
+          } else if (next != IterOutcome.OK && next != IterOutcome.OK_NEW_SCHEMA) {
             return next;
           }
           incomingRecordCount = incoming.getRecordCount();
@@ -255,13 +257,7 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
 
   /** hack to make ref and full work together... need to figure out if this is still necessary. **/
   private FieldReference getRef(final NamedExpression e) {
-    final FieldReference ref = e.getRef();
-    final PathSegment seg = ref.getRootSegment();
-
-//    if (seg.isNamed() && "output".contentEquals(seg.getNameSegment().getPath())) {
-//      return new FieldReference(ref.getPath().toString().subSequence(7, ref.getPath().length()), ref.getPosition());
-//    }
-    return ref;
+    return e.getRef();
   }
 
   private boolean isAnyWildcard(final List<NamedExpression> exprs) {
@@ -321,7 +317,6 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
             int k = 0;
             for (final VectorWrapper<?> wrapper : incoming) {
               final ValueVector vvIn = wrapper.getValueVector();
-              final SchemaPath originalPath = vvIn.getField().getPath();
               if (k > result.outputNames.size()-1) {
                 assert false;
               }
@@ -421,7 +416,7 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
         // The reference name will be passed to ComplexWriter, used as the name of the output vector from the writer.
         ((DrillComplexWriterFuncHolder) ((DrillFuncHolderExpr) expr).getHolder()).setReference(namedExpression.getRef());
         cg.addExpr(expr);
-      } else{
+      } else {
         // need to do evaluation.
         final ValueVector vector = container.addOrGet(outputField, callBack);
         allocationVectors.add(vector);
@@ -430,6 +425,15 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
         final ValueVectorWriteExpression write = new ValueVectorWriteExpression(fid, expr, useSetSafe);
         final HoldingContainer hc = cg.addExpr(write);
 
+        // We cannot do multiple transfers from the same vector. However we still need to instantiate the output vector.
+        if (expr instanceof ValueVectorReadExpression) {
+          final ValueVectorReadExpression vectorRead = (ValueVectorReadExpression) expr;
+          if (!vectorRead.hasReadPath()) {
+            final TypedFieldId id = vectorRead.getFieldId();
+            final ValueVector vvIn = incoming.getValueAccessorById(id.getIntermediateClass(), id.getFieldIds()).getValueVector();
+            vvIn.makeTransferPair(vector);
+          }
+        }
         logger.debug("Added eval for project expression.");
       }
     }

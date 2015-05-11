@@ -271,6 +271,10 @@ public class Drillbit implements AutoCloseable {
       Thread.sleep(context.getConfig().getInt(ExecConstants.ZK_REFRESH) * 2);
     } catch (final InterruptedException e) {
       logger.warn("Interrupted while sleeping during coordination deregistration.");
+
+      // Preserve evidence that the interruption occurred so that code higher up on the call stack can learn of the
+      // interruption and respond to it if it wants to.
+      Thread.currentThread().interrupt();
     }
 
     if (embeddedJetty != null) {
@@ -322,7 +326,9 @@ public class Drillbit implements AutoCloseable {
     public void run() {
       logger.info("Received shutdown request.");
       try {
-        drillbit.close();
+        synchronized (idCounter) {
+          drillbit.close();
+        }
       } catch(final Exception e) {
         throw new RuntimeException("Caught exception closing Drillbit started from\n" + stackTrace, e);
       }

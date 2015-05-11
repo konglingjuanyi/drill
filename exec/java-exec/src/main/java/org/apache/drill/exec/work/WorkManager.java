@@ -21,13 +21,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.drill.common.SelfCleaningRunnable;
+import org.apache.drill.common.concurrent.ExtendedLatch;
 import org.apache.drill.exec.coord.ClusterCoordinator;
 import org.apache.drill.exec.proto.BitControl.FragmentStatus;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
@@ -45,7 +45,6 @@ import org.apache.drill.exec.rpc.data.DataResponseHandlerImpl;
 import org.apache.drill.exec.server.BootStrapContext;
 import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.store.sys.PStoreProvider;
-import org.apache.drill.exec.work.batch.ControlHandlerImpl;
 import org.apache.drill.exec.work.batch.ControlMessageHandler;
 import org.apache.drill.exec.work.foreman.Foreman;
 import org.apache.drill.exec.work.foreman.QueryManager;
@@ -116,7 +115,7 @@ public class WorkManager implements AutoCloseable {
 
 
     // TODO references to this escape here (via WorkerBee) before construction is done
-    controlMessageWorker = new ControlHandlerImpl(bee); // TODO getFragmentRunner(), getForemanForQueryId()
+    controlMessageWorker = new ControlMessageHandler(bee); // TODO getFragmentRunner(), getForemanForQueryId()
     userWorker = new UserWorker(bee); // TODO should just be an interface? addNewForeman(), getForemanForQueryId()
     statusThread = new StatusThread();
     dataHandler = new DataResponseHandlerImpl(bee); // TODO only uses startFragmentPendingRemote()
@@ -174,6 +173,10 @@ public class WorkManager implements AutoCloseable {
       }
     } catch (final InterruptedException e) {
       logger.warn("Executor interrupted while awaiting termination");
+
+      // Preserve evidence that the interruption occurred so that code higher up on the call stack can learn of the
+      // interruption and respond to it if it wants to.
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -181,7 +184,7 @@ public class WorkManager implements AutoCloseable {
     return dContext;
   }
 
-  private CountDownLatch exitLatch = null; // used to wait to exit when things are still running
+  private ExtendedLatch exitLatch = null; // used to wait to exit when things are still running
 
   /**
    * Waits until it is safe to exit. Blocks until all currently running fragments have completed.
@@ -194,17 +197,11 @@ public class WorkManager implements AutoCloseable {
         return;
       }
 
-      exitLatch = new CountDownLatch(1);
+      exitLatch = new ExtendedLatch();
     }
 
-    while(true) {
-      try {
-        exitLatch.await(5, TimeUnit.SECONDS);
-      } catch(final InterruptedException e) {
-        // keep waiting
-      }
-      break;
-    }
+    // Wait for at most 5 seconds or until the latch is released.
+    exitLatch.awaitUninterruptibly(5000);
   }
 
   /**
@@ -265,7 +262,11 @@ public class WorkManager implements AutoCloseable {
     }
 
     public void startFragmentPendingRemote(final FragmentManager handler) {
-      executor.execute(handler.getRunnable());
+      final FragmentExecutor fragmentExecutor = handler.getRunnable();
+      // cancelled fragment managers will return null fragment executors
+      if (fragmentExecutor != null) {
+        executor.execute(fragmentExecutor);
+      }
     }
 
     public void addFragmentRunner(final FragmentExecutor fragmentExecutor) {
@@ -325,6 +326,10 @@ public class WorkManager implements AutoCloseable {
         try {
           Thread.sleep(STATUS_PERIOD_SECONDS * 1000);
         } catch(final InterruptedException e) {
+          // Preserve evidence that the interruption occurred so that code higher up on the call stack can learn of the
+          // interruption and respond to it if it wants to.
+          Thread.currentThread().interrupt();
+
           // exit status thread on interrupt.
           break;
         }

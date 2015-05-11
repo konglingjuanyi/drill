@@ -24,6 +24,7 @@ import io.netty.util.concurrent.GenericFutureListener;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
@@ -42,6 +43,8 @@ import org.apache.drill.exec.coord.ClusterCoordinator;
 import org.apache.drill.exec.coord.DistributedSemaphore;
 import org.apache.drill.exec.coord.DistributedSemaphore.DistributedLease;
 import org.apache.drill.exec.exception.OptimizerException;
+import org.apache.drill.exec.memory.OutOfMemoryException;
+import org.apache.drill.exec.memory.OutOfMemoryRuntimeException;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.ops.QueryContext;
 import org.apache.drill.exec.opt.BasicOptimizer;
@@ -103,8 +106,10 @@ import com.google.common.collect.Sets;
  */
 public class Foreman implements Runnable {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Foreman.class);
+  private static final org.slf4j.Logger queryLogger = org.slf4j.LoggerFactory.getLogger("query.logger");
+  private static final ObjectMapper MAPPER = new ObjectMapper();
   private final static ExecutionControlsInjector injector = ExecutionControlsInjector.getInjector(Foreman.class);
-  private static final int RPC_WAIT_IN_SECONDS = 90;
+  private static final int RPC_WAIT_IN_MSECS_PER_FRAGMENT = 5000;
 
   private final QueryId queryId;
   private final RunQuery queryRequest;
@@ -114,6 +119,7 @@ public class Foreman implements Runnable {
   private final DrillbitContext drillbitContext;
   private final UserClientConnection initiatingClient; // used to send responses
   private volatile QueryState state;
+  private boolean resume = false;
 
   private volatile DistributedLease lease; // used to limit the number of concurrent queries
 
@@ -127,6 +133,7 @@ public class Foreman implements Runnable {
   private final ConnectionClosedListener closeListener = new ConnectionClosedListener();
   private final ChannelFuture closeFuture;
 
+  private String queryText;
 
   /**
    * Constructor. Sets up the Foreman, but does not initiate any execution.
@@ -190,6 +197,18 @@ public class Foreman implements Runnable {
   }
 
   /**
+   * Resume the query. Regardless of the current state, this method sends a resume signal to all fragments.
+   * This method can be called multiple times.
+   */
+  public void resume() {
+    resume = true;
+    // resume all pauses through query context
+    queryContext.getExecutionControls().unpauseAll();
+    // resume all pauses through all fragment contexts
+    queryManager.unpauseExecutingFragments(drillbitContext, rootRunner);
+  }
+
+  /**
    * Called by execution pool to do query setup, and kick off remote execution.
    *
    * <p>Note that completion of this function is not the end of the Foreman's role
@@ -207,6 +226,8 @@ public class Foreman implements Runnable {
 
     try {
       injector.injectChecked(queryContext.getExecutionControls(), "run-try-beginning", ForemanException.class);
+      queryText = queryRequest.getPlan();
+
       // convert a run query request into action
       switch (queryRequest.getType()) {
       case LOGICAL:
@@ -222,6 +243,8 @@ public class Foreman implements Runnable {
         throw new IllegalStateException();
       }
       injector.injectChecked(queryContext.getExecutionControls(), "run-try-end", ForemanException.class);
+    } catch (final OutOfMemoryException | OutOfMemoryRuntimeException e) {
+      moveToState(QueryState.FAILED, UserException.memoryError(e).build());
     } catch (final ForemanException e) {
       moveToState(QueryState.FAILED, e);
     } catch (AssertionError | Exception ex) {
@@ -258,8 +281,19 @@ public class Foreman implements Runnable {
        * If we do throw an exception during setup, and have already moved to QueryState.FAILED, we just need to
        * make sure that we can't make things any worse as those events are delivered, but allow
        * any necessary remaining cleanup to proceed.
+       *
+       * Note that cancellations cannot be simulated before this point, i.e. pauses can be injected, because Foreman
+       * would wait on the cancelling thread to signal a resume and the cancelling thread would wait on the Foreman
+       * to accept events.
        */
       acceptExternalEvents.countDown();
+
+      // If we received the resume signal before fragments are setup, the first call does not actually resume the
+      // fragments. Since setup is done, all fragments must have been delivered to remote nodes. Now we can resume.
+      if(resume) {
+        resume();
+      }
+      injector.injectPause(queryContext.getExecutionControls(), "foreman-ready", logger);
 
       // restore the thread's original name
       currentThread.setName(originalName);
@@ -365,7 +399,6 @@ public class Foreman implements Runnable {
     drillbitContext.getClusterCoordinator().addDrillbitStatusListener(queryManager.getDrillbitStatusListener());
 
     logger.debug("Submitting fragments to run.");
-    injector.injectPause(queryContext.getExecutionControls(), "pause-run-plan", logger);
 
     // set up the root fragment first so we'll have incoming buffers available.
     setupRootFragment(rootPlanFragment, work.getRootOperator());
@@ -431,19 +464,22 @@ public class Foreman implements Runnable {
       }
 
       final long queueTimeout = optionManager.getOption(ExecConstants.QUEUE_TIMEOUT);
+      final String queueName;
 
       try {
         @SuppressWarnings("resource")
         final ClusterCoordinator clusterCoordinator = drillbitContext.getClusterCoordinator();
-        DistributedSemaphore distributedSemaphore;
+        final DistributedSemaphore distributedSemaphore;
 
         // get the appropriate semaphore
         if (totalCost > queueThreshold) {
           final int largeQueue = (int) optionManager.getOption(ExecConstants.LARGE_QUEUE_SIZE);
           distributedSemaphore = clusterCoordinator.getSemaphore("query.large", largeQueue);
+          queueName = "large";
         } else {
           final int smallQueue = (int) optionManager.getOption(ExecConstants.SMALL_QUEUE_SIZE);
           distributedSemaphore = clusterCoordinator.getSemaphore("query.small", smallQueue);
+          queueName = "small";
         }
 
 
@@ -455,12 +491,17 @@ public class Foreman implements Runnable {
       if (lease == null) {
         throw UserException
             .resourceError()
-            .message("Unable to acquire queue resources for query within timeout.  Timeout was set at %d seconds.",
-                queueTimeout / 1000)
+            .message(
+                "Unable to acquire queue resources for query within timeout.  Timeout for %s queue was set at %d seconds.",
+                queueTimeout / 1000, queueName)
             .build();
       }
 
     }
+  }
+
+  Exception getCurrentException() {
+    return foremanResult.getException();
   }
 
   private QueryWorkUnit getQueryWorkUnit(final PhysicalPlan plan) throws ExecutionSetupException {
@@ -532,7 +573,7 @@ public class Foreman implements Runnable {
    */
   private class ForemanResult implements AutoCloseable {
     private QueryState resultState = null;
-    private Exception resultException = null;
+    private volatile Exception resultException = null;
     private boolean isClosed = false;
 
     /**
@@ -585,11 +626,20 @@ public class Foreman implements Runnable {
     }
 
     /**
-     * Close the given resource, catching and adding any caught exceptions via
-     * {@link #addException(Exception)}. If an exception is caught, it will change
-     * the result state to FAILED, regardless of what its current value.
+     * Expose the current exception (if it exists). This is useful for secondary reporting to the query profile.
      *
-     * @param autoCloseable the resource to close
+     * @return the current Foreman result exception or null.
+     */
+    public Exception getException() {
+      return resultException;
+    }
+
+    /**
+     * Close the given resource, catching and adding any caught exceptions via {@link #addException(Exception)}. If an
+     * exception is caught, it will change the result state to FAILED, regardless of what its current value.
+     *
+     * @param autoCloseable
+     *          the resource to close
      */
     private void suppressingClose(final AutoCloseable autoCloseable) {
       Preconditions.checkState(!isClosed);
@@ -611,6 +661,22 @@ public class Foreman implements Runnable {
       }
     }
 
+    private void logQuerySummary() {
+      try {
+        LoggedQuery q = new LoggedQuery(
+            QueryIdHelper.getQueryId(queryId),
+            queryContext.getQueryContextInfo().getDefaultSchemaName(),
+            queryText,
+            new Date(queryContext.getQueryContextInfo().getQueryStartTime()),
+            new Date(System.currentTimeMillis()),
+            state,
+            queryContext.getSession().getCredentials().getUserName());
+        queryLogger.info(MAPPER.writeValueAsString(q));
+      } catch (Exception e) {
+        logger.error("Failure while recording query information to query log.", e);
+      }
+    }
+
     @Override
     public void close() {
       Preconditions.checkState(!isClosed);
@@ -621,6 +687,9 @@ public class Foreman implements Runnable {
 
       // remove the channel disconnected listener (doesn't throw)
       closeFuture.removeListener(closeListener);
+
+      // log the query summary
+      logQuerySummary();
 
       // These are straight forward removals from maps, so they won't throw.
       drillbitContext.getWorkBus().removeFragmentStatusListener(queryId);
@@ -649,11 +718,17 @@ public class Foreman implements Runnable {
       final QueryResult.Builder resultBuilder = QueryResult.newBuilder()
           .setQueryId(queryId)
           .setQueryState(resultState);
+      final UserException uex;
       if (resultException != null) {
         final boolean verbose = queryContext.getOptions().getOption(ExecConstants.ENABLE_VERBOSE_ERRORS_KEY).bool_val;
-        final UserException uex = UserException.systemError(resultException).addIdentity(queryContext.getCurrentEndpoint()).build();
+        uex = UserException.systemError(resultException).addIdentity(queryContext.getCurrentEndpoint()).build();
         resultBuilder.addError(uex.getOrCreatePBError(verbose));
+      } else {
+        uex = null;
       }
+
+      // we store the final result here so we can capture any error/errorId in the profile for later debugging.
+      queryManager.writeFinalProfile(uex);
 
       /*
        * If sending the result fails, we don't really have any way to modify the result we tried to send;
@@ -798,7 +873,7 @@ public class Foreman implements Runnable {
 
   private void recordNewState(final QueryState newState) {
     state = newState;
-    queryManager.updateQueryStateInStore(newState);
+    queryManager.updateEphemeralState(newState);
   }
 
   private void runSQL(final String sql) throws ExecutionSetupException {
@@ -892,7 +967,8 @@ public class Foreman implements Runnable {
      * count down (see FragmentSubmitFailures), but we count the number of failures so that we'll
      * know if any submissions did fail.
      */
-    final ExtendedLatch endpointLatch = new ExtendedLatch(intFragmentMap.keySet().size());
+    final int numIntFragments = intFragmentMap.keySet().size();
+    final ExtendedLatch endpointLatch = new ExtendedLatch(numIntFragments);
     final FragmentSubmitFailures fragmentSubmitFailures = new FragmentSubmitFailures();
 
     // send remote intermediate fragments
@@ -900,15 +976,16 @@ public class Foreman implements Runnable {
       sendRemoteFragments(ep, intFragmentMap.get(ep), endpointLatch, fragmentSubmitFailures);
     }
 
-    if(!endpointLatch.awaitUninterruptibly(RPC_WAIT_IN_SECONDS * 1000)){
+    final long timeout = RPC_WAIT_IN_MSECS_PER_FRAGMENT * numIntFragments;
+    if(numIntFragments > 0 && !endpointLatch.awaitUninterruptibly(timeout)){
       long numberRemaining = endpointLatch.getCount();
       throw UserException.connectionError()
           .message(
-              "Exceeded timeout while waiting send intermediate work fragments to remote nodes.  Sent %d and only heard response back from %d nodes.",
-              intFragmentMap.keySet().size(), intFragmentMap.keySet().size() - numberRemaining)
+              "Exceeded timeout (%d) while waiting send intermediate work fragments to remote nodes. " +
+                  "Sent %d and only heard response back from %d nodes.",
+              timeout, numIntFragments, numIntFragments - numberRemaining)
           .build();
     }
-
 
     // if any of the intermediate fragment submissions failed, fail the query
     final List<FragmentSubmitFailures.SubmissionException> submissionExceptions = fragmentSubmitFailures.submissionExceptions;

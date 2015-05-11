@@ -62,6 +62,9 @@ public class FragmentExecutor implements Runnable {
   private final AtomicReference<FragmentState> fragmentState = new AtomicReference<>(FragmentState.AWAITING_ALLOCATION);
   private final ExtendedLatch acceptExternalEvents = new ExtendedLatch();
 
+  // Thread that is currently executing the Fragment. Value is null if the fragment hasn't started running or finished
+  private final AtomicReference<Thread> myThreadRef = new AtomicReference<>(null);
+
   public FragmentExecutor(final FragmentContext context, final FragmentRoot rootOperator,
                           final StatusReporter listener) {
     this.fragmentContext = context;
@@ -101,15 +104,14 @@ public class FragmentExecutor implements Runnable {
       return null;
     }
 
-    final FragmentStatus status = AbstractStatusReporter
+    return AbstractStatusReporter
         .getBuilder(fragmentContext, FragmentState.RUNNING, null)
         .build();
-    return status;
   }
 
   /**
    * Cancel the execution of this fragment is in an appropriate state. Messages come from external.
-   * NOTE that this can be called from threads *other* than the one running this runnable(),
+   * NOTE that this will be called from threads *other* than the one running this runnable(),
    * so we need to be careful about the state transitions that can result.
    */
   public void cancel() {
@@ -120,26 +122,47 @@ public class FragmentExecutor implements Runnable {
      * For example, consider the case when the Foreman sets up the root fragment executor which is
      * waiting on incoming data, but the Foreman fails to setup non-root fragment executors. The
      * run() method on the root executor will never be called, and the executor will never be ready
-     * to accept external events. This will make the cancelling thread wait forever.
+     * to accept external events. This would make the cancelling thread wait forever, if it was waiting on
+     * acceptExternalEvents.
      */
     synchronized (this) {
       if (root != null) {
         acceptExternalEvents.awaitUninterruptibly();
+      } else {
+        // This fragment may or may not start running. If it doesn't then closeOutResources() will never be called.
+        // Assuming it's safe to call closeOutResources() multiple times, we call it here explicitly in case this
+        // fragment will never start running.
+        closeOutResources();
       }
 
       /*
        * We set the cancel requested flag but the actual cancellation is managed by the run() loop, if called.
        */
       updateState(FragmentState.CANCELLATION_REQUESTED);
+
+      /*
+       * Interrupt the thread so that it exits from any blocking operation it could be executing currently.
+       */
+      final Thread myThread = myThreadRef.get();
+      if (myThread != null) {
+        myThread.interrupt();
+      }
     }
+  }
+
+  /**
+   * Resume all the pauses within the current context. Note that this method will be called from threads *other* than
+   * the one running this runnable(). Also, this method can be called multiple times.
+   */
+  public synchronized void unpause() {
+    fragmentContext.getExecutionControls().unpauseAll();
   }
 
   /**
    * Inform this fragment that one of its downstream partners no longer needs additional records. This is most commonly
    * called in the case that a limit query is executed.
    *
-   * @param handle
-   *          The downstream FragmentHandle of the Fragment that needs no more records from this Fragment.
+   * @param handle The downstream FragmentHandle of the Fragment that needs no more records from this Fragment.
    */
   public void receivingFragmentFinished(final FragmentHandle handle) {
     acceptExternalEvents.awaitUninterruptibly();
@@ -156,6 +179,7 @@ public class FragmentExecutor implements Runnable {
   @Override
   public void run() {
     final Thread myThread = Thread.currentThread();
+    myThreadRef.set(myThread);
     final String originalThreadName = myThread.getName();
     final FragmentHandle fragmentHandle = fragmentContext.getHandle();
     final DrillbitContext drillbitContext = fragmentContext.getDrillbitContext();
@@ -207,9 +231,7 @@ public class FragmentExecutor implements Runnable {
       updateState(FragmentState.FINISHED);
     } catch (OutOfMemoryError | OutOfMemoryRuntimeException e) {
       if (!(e instanceof OutOfMemoryError) || "Direct buffer memory".equals(e.getMessage())) {
-        fail(UserException.resourceError(e)
-            .message("One or more nodes ran out of memory while executing the query.")
-            .build());
+        fail(UserException.memoryError(e).build());
       } else {
         // we have a heap out of memory error. The JVM in unstable, exit.
         System.err.println("Node ran out of Heap memory, exiting.");
@@ -234,6 +256,8 @@ public class FragmentExecutor implements Runnable {
       clusterCoordinator.removeDrillbitStatusListener(drillbitStatusListener);
 
       myThread.setName(originalThreadName);
+
+      myThreadRef.set(null);
     }
   }
 
@@ -274,6 +298,8 @@ public class FragmentExecutor implements Runnable {
 
     // first close the operators and release all memory.
     try {
+      // Say executor was cancelled before setup. Now when executor actually runs, root is not initialized, but this
+      // method is called in finally. So root can be null.
       if (root != null) {
         root.close();
       }

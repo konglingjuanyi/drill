@@ -162,7 +162,7 @@ public class DrillTextRecordReader extends AbstractRecordReader {
         // index of the scanned field
         int p = 0;
         int i = 0;
-        vector.getMutator().startNewGroup(recordCount);
+        vector.getMutator().startNewValue(recordCount);
         // Process each field in this line
         while (end < value.getLength() - 1) {
           if(numCols > 0 && p >= numCols) {
@@ -231,7 +231,10 @@ public class DrillTextRecordReader extends AbstractRecordReader {
   @Override
   public void cleanup() {
     try {
-      reader.close();
+      if (reader != null) {
+        reader.close();
+        reader = null;
+      }
     } catch (IOException e) {
       logger.warn("Exception closing reader: {}", e);
     }

@@ -17,6 +17,10 @@
  */
 package org.apache.drill.exec.server;
 
+import static org.apache.drill.exec.ExecConstants.SLICE_TARGET;
+import static org.apache.drill.exec.ExecConstants.SLICE_TARGET_DEFAULT;
+import static org.apache.drill.exec.planner.physical.PlannerSettings.HASHAGG;
+import static org.apache.drill.exec.planner.physical.PlannerSettings.PARTITION_SENDER_SET_THREADS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -25,12 +29,13 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
 
+import com.google.common.base.Preconditions;
 import org.apache.commons.math3.util.Pair;
 import org.apache.drill.QueryTestUtil;
 import org.apache.drill.SingleRowListener;
 import org.apache.drill.common.AutoCloseables;
+import org.apache.drill.common.concurrent.ExtendedLatch;
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.common.types.TypeProtos.MinorType;
@@ -42,6 +47,10 @@ import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.memory.TopLevelAllocator;
 import org.apache.drill.exec.physical.impl.ScreenCreator;
+import org.apache.drill.exec.physical.impl.mergereceiver.MergingRecordBatch;
+import org.apache.drill.exec.physical.impl.partitionsender.PartitionSenderRootExec;
+import org.apache.drill.exec.physical.impl.partitionsender.PartitionerDecorator;
+import org.apache.drill.exec.physical.impl.unorderedreceiver.UnorderedReceiverBatch;
 import org.apache.drill.exec.planner.sql.DrillSqlWorker;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
 import org.apache.drill.exec.proto.GeneralRPCProtos.Ack;
@@ -60,7 +69,9 @@ import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.user.ConnectionThrottle;
 import org.apache.drill.exec.rpc.user.QueryDataBatch;
 import org.apache.drill.exec.rpc.user.UserResultsListener;
+import org.apache.drill.exec.store.pojo.PojoRecordReader;
 import org.apache.drill.exec.testing.ControlsInjectionUtil;
+import org.apache.drill.exec.util.Pointer;
 import org.apache.drill.exec.work.foreman.Foreman;
 import org.apache.drill.exec.work.foreman.ForemanException;
 import org.apache.drill.exec.work.foreman.ForemanSetupException;
@@ -68,15 +79,14 @@ import org.apache.drill.exec.work.fragment.FragmentExecutor;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.slf4j.Logger;
 
 /**
  * Test how resilient drillbits are to throwing exceptions during various phases of query
- * execution by injecting exceptions at various points. The test cases are mentioned in DRILL-2383.
+ * execution by injecting exceptions at various points and to cancellations in various phases.
+ * The test cases are mentioned in DRILL-2383.
  */
-@Ignore
 public class TestDrillbitResilience {
   private static final Logger logger = org.slf4j.LoggerFactory.getLogger(TestDrillbitResilience.class);
 
@@ -90,7 +100,6 @@ public class TestDrillbitResilience {
    * counting sys.drillbits.
    */
   private static final String TEST_QUERY = "select * from sys.memory";
-  private static final long PAUSE_TIME_MILLIS = 3000L;
 
   private static void startDrillbit(final String name, final RemoteServiceSet remoteServiceSet) {
     if (drillbits.containsKey(name)) {
@@ -184,18 +193,17 @@ public class TestDrillbitResilience {
   }
 
   /**
-   * Clear all exceptions.
+   * Clear all injections.
    */
   private static void clearAllInjections() {
-    assertTrue(drillClient != null);
+    Preconditions.checkNotNull(drillClient);
     ControlsInjectionUtil.clearControls(drillClient);
   }
 
   /**
    * Check that all the drillbits are ok.
    * <p/>
-   * <p>The current implementation does this by counting the number of drillbits using a
-   * query.
+   * <p>The current implementation does this by counting the number of drillbits using a query.
    */
   private static void assertDrillbitsOk() {
       final SingleRowListener listener = new SingleRowListener() {
@@ -245,13 +253,14 @@ public class TestDrillbitResilience {
     try {
       QueryTestUtil.testWithListener(drillClient, QueryType.SQL, "select count(*) from sys.memory", listener);
       listener.waitForCompletion();
-      assertTrue(listener.getQueryState() == QueryState.COMPLETED);
+      final QueryState state = listener.getQueryState();
+      assertTrue(String.format("QueryState should be COMPLETED (and not %s).", state), state == QueryState.COMPLETED);
     } catch (final Exception e) {
       throw new RuntimeException("Couldn't query active drillbits", e);
     }
 
     final List<DrillPBError> errorList = listener.getErrorList();
-    assertTrue(errorList.isEmpty());
+    assertTrue("There should not be any errors when checking if Drillbits are OK.", errorList.isEmpty());
   }
 
   @SuppressWarnings("static-method")
@@ -262,10 +271,10 @@ public class TestDrillbitResilience {
   }
 
   /**
-   * Set the given exceptions.
+   * Set the given controls.
    */
-  private static void setExceptions(final String controlsString) {
-    ControlsInjectionUtil.setControls(drillClient, controlsString);
+  private static void setControls(final String controls) {
+    ControlsInjectionUtil.setControls(drillClient, controls);
   }
 
   /**
@@ -332,16 +341,16 @@ public class TestDrillbitResilience {
    */
   private static void assertExceptionInjected(final Throwable throwable,
                                               final Class<? extends Throwable> exceptionClass, final String desc) {
-    assertTrue(throwable instanceof UserException);
+    assertTrue("Throwable was not of UserException type.", throwable instanceof UserException);
     final ExceptionWrapper cause = ((UserException) throwable).getOrCreatePBError(false).getException();
-    assertEquals(exceptionClass.getName(), cause.getExceptionClass());
-    assertEquals(desc, cause.getMessage());
+    assertEquals("Exception class names should match.", exceptionClass.getName(), cause.getExceptionClass());
+    assertEquals("Exception sites should match.", desc, cause.getMessage());
   }
 
   @Test
   public void settingNoopInjectionsAndQuery() {
     final String controls = createSingleExceptionOnBit(getClass(), "noop", RuntimeException.class, DRILLBIT_BETA);
-    setExceptions(controls);
+    setControls(controls);
     try {
       QueryTestUtil.test(drillClient, TEST_QUERY);
     } catch (final Exception e) {
@@ -357,7 +366,7 @@ public class TestDrillbitResilience {
    */
   private static void testForeman(final String desc) {
     final String controls = createSingleException(Foreman.class, desc, ForemanException.class);
-    setExceptions(controls);
+    setControls(controls);
     try {
       QueryTestUtil.test(drillClient, TEST_QUERY);
       fail();
@@ -372,32 +381,39 @@ public class TestDrillbitResilience {
     testForeman("run-try-beginning");
   }
 
-  /*
-   * TODO I'm beginning to think that Foreman needs to gate output to its client in a similar way
-   * that it gates input via stateListener. That could be tricky, since some results could be
-   * queued up before Foreman has gotten through it's run(), and they would all have to be sent
-   * before the gate is opened. There's also the question of what to do in case we detect failure
-   * there after some data has been sent. Right now, this test doesn't work because that's
-   * exactly what happens, and the client believes that the query succeeded, even though an exception
-   * was thrown after setup completed, but data was asynchronously sent to the client before that.
-   * This test also revealed that the QueryState never seems to make it to the client, so we can't
-   * detect the failure that way (see SingleRowListener's getQueryState(), which I originally tried
-   * to use here to detect query completion).
-   */
   @SuppressWarnings("static-method")
   @Test
   public void foreman_runTryEnd() {
     testForeman("run-try-end");
   }
 
+  /**
+   * Tests can use this listener to wait, until the submitted query completes or fails, by
+   * calling #waitForCompletion.
+   */
   private static class WaitUntilCompleteListener implements UserResultsListener {
-    protected final CountDownLatch latch;
+    private final ExtendedLatch latch = new ExtendedLatch(1); // to signal completion
     protected QueryId queryId = null;
-    protected Exception ex = null;
-    protected QueryState state = null;
+    protected volatile Pointer<Exception> ex = new Pointer<>();
+    protected volatile QueryState state = null;
 
-    public WaitUntilCompleteListener(final int count) {
-      latch = new CountDownLatch(count);
+    /**
+     * Method that sets the exception if the condition is not met.
+     */
+    protected final void check(final boolean condition, final String format, final Object... args) {
+      if (!condition) {
+        ex.value = new IllegalStateException(String.format(format, args));
+      }
+    }
+
+    /**
+     * Method that cancels and resumes the query, in order.
+     */
+    protected final void cancelAndResume() {
+      Preconditions.checkNotNull(queryId);
+      final ExtendedLatch trigger = new ExtendedLatch(1);
+      (new CancellingThread(queryId, ex, trigger)).start();
+      (new ResumingThread(queryId, ex, trigger)).start();
     }
 
     @Override
@@ -407,7 +423,7 @@ public class TestDrillbitResilience {
 
     @Override
     public void submissionFailed(final UserException ex) {
-      this.ex = ex;
+      this.ex.value = ex;
       state = QueryState.FAILED;
       latch.countDown();
     }
@@ -424,21 +440,37 @@ public class TestDrillbitResilience {
     }
 
     public final Pair<QueryState, Exception> waitForCompletion() {
-      try {
-        latch.await();
-      } catch (final InterruptedException e) {
-        return new Pair<QueryState, Exception>(state, e);
-      }
-      return new Pair<>(state, ex);
+      latch.awaitUninterruptibly();
+      return new Pair<>(state, ex.value);
     }
   }
 
+  private static class ListenerThatCancelsQueryAfterFirstBatchOfData extends WaitUntilCompleteListener {
+    private boolean cancelRequested = false;
+
+    @Override
+    public void dataArrived(final QueryDataBatch result, final ConnectionThrottle throttle) {
+      if (!cancelRequested) {
+        check(queryId != null, "Query id should not be null, since we have waited long enough.");
+        (new CancellingThread(queryId, ex, null)).start();
+        cancelRequested = true;
+      }
+      result.release();
+    }
+  };
+
+  /**
+   * Thread that cancels the given query id. After the cancel is acknowledged, the latch is counted down.
+   */
   private static class CancellingThread extends Thread {
-
     private final QueryId queryId;
+    private final Pointer<Exception> ex;
+    private final ExtendedLatch latch;
 
-    public CancellingThread(final QueryId queryId) {
+    public CancellingThread(final QueryId queryId, final Pointer<Exception> ex, final ExtendedLatch latch) {
       this.queryId = queryId;
+      this.ex = ex;
+      this.latch = latch;
     }
 
     @Override
@@ -446,139 +478,200 @@ public class TestDrillbitResilience {
       final DrillRpcFuture<Ack> cancelAck = drillClient.cancelQuery(queryId);
       try {
         cancelAck.checkedGet();
-      } catch (final RpcException e) {
-        fail(e.getMessage()); // currently this failure does not fail the test
+      } catch (final RpcException ex) {
+        this.ex.value = ex;
       }
+      if (latch != null) {
+        latch.countDown();
+      }
+    }
+  }
+
+  /**
+   * Thread that resumes the given query id. After the latch is counted down, the resume signal is sent, until then
+   * the thread waits without interruption.
+   */
+  private static class ResumingThread extends Thread {
+    private final QueryId queryId;
+    private final Pointer<Exception> ex;
+    private final ExtendedLatch latch;
+
+    public ResumingThread(final QueryId queryId, final Pointer<Exception> ex, final ExtendedLatch latch) {
+      this.queryId = queryId;
+      this.ex = ex;
+      this.latch = latch;
+    }
+
+    @Override
+    public void run() {
+      latch.awaitUninterruptibly();
+      final DrillRpcFuture<Ack> resumeAck = drillClient.resumeQuery(queryId);
+      try {
+        resumeAck.checkedGet();
+      } catch (final RpcException ex) {
+        this.ex.value = ex;
+      }
+    }
+  }
+
+  /**
+   * Given the result of {@link WaitUntilCompleteListener#waitForCompletion}, this method fails if the state is not
+   * as expected or if an exception is thrown.
+   */
+  private static void assertCompleteState(final Pair<QueryState, Exception> result, final QueryState expectedState) {
+    final QueryState actualState = result.getFirst();
+    final Exception exception = result.getSecond();
+    if (actualState != expectedState || exception != null) {
+      fail(String.format("Query state is incorrect (expected: %s, actual: %s) AND/OR \nException thrown: %s",
+        expectedState, actualState, exception == null ? "none." : exception));
     }
   }
 
   /**
    * Given a set of controls, this method ensures that the TEST_QUERY completes with a CANCELED state.
    */
-  private static void assertCancelled(final String controls, final WaitUntilCompleteListener listener) {
-    ControlsInjectionUtil.setControls(drillClient, controls);
-
-    QueryTestUtil.testWithListener(drillClient, QueryType.SQL, TEST_QUERY, listener);
-    final Pair<QueryState, Exception> result = listener.waitForCompletion();
-    assertTrue(String.format("Expected Query Outcome of CANCELED but had Outcome of %s", result.getFirst()),
-        result.getFirst() == QueryState.CANCELED);
-    assertTrue(String.format("Expected no Exception but had Exception %s", result.getSecond()),
-        result.getSecond() == null);
+  private static void assertCancelledWithoutException(final String controls, final WaitUntilCompleteListener listener) {
+    assertCancelled(controls, TEST_QUERY, listener);
   }
 
-  @Test // Cancellation TC 1
-  public void cancelBeforeAnyResultsArrive() {
-    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener(1) {
+  /**
+   * Given a set of controls, this method ensures that the given query completes with a CANCELED state.
+   */
+  private static void assertCancelled(final String controls, final String testQuery,
+      final WaitUntilCompleteListener listener) {
+    setControls(controls);
 
+    QueryTestUtil.testWithListener(drillClient, QueryType.SQL, testQuery, listener);
+    final Pair<QueryState, Exception> result = listener.waitForCompletion();
+    assertCompleteState(result, QueryState.CANCELED);
+  }
+
+  private static void setSessionOption(final String option, final String value) {
+    try {
+      final List<QueryDataBatch> results = drillClient.runQuery(QueryType.SQL,
+          String.format("alter session set `%s` = %s", option, value));
+      for (final QueryDataBatch data : results) {
+        data.release();
+      }
+    } catch(RpcException e) {
+      fail(String.format("Failed to set session option `%s` = %s, Error: %s", option, value, e.toString()));
+    }
+  }
+
+  private static String createPauseInjection(final Class siteClass, final String siteDesc, final int nSkip) {
+    return "{\"injections\" : [{"
+      + "\"type\" : \"pause\"," +
+      "\"siteClass\" : \"" + siteClass.getName() + "\","
+      + "\"desc\" : \"" + siteDesc + "\","
+      + "\"nSkip\" : " + nSkip
+      + "}]}";
+  }
+
+  private static String createPauseInjection(final Class siteClass, final String siteDesc) {
+    return createPauseInjection(siteClass, siteDesc, 0);
+  }
+
+  @Test // To test pause and resume. Test hangs if resume did not happen.
+  public void passThrough() {
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener() {
       @Override
       public void queryIdArrived(final QueryId queryId) {
-        (new CancellingThread(queryId)).start();
+        super.queryIdArrived(queryId);
+        final ExtendedLatch trigger = new ExtendedLatch(1);
+        (new ResumingThread(queryId, ex, trigger)).start();
+        trigger.countDown();
       }
     };
 
-    final String controls = "{\"injections\":[{"
-      + "\"type\":\"pause\"," +
-      "\"siteClass\":\"" + Foreman.class.getName() + "\","
-      + "\"desc\":\"pause-run-plan\","
-      + "\"millis\":" + PAUSE_TIME_MILLIS + ","
-      + "\"nSkip\":0,"
-      + "\"nFire\":1"
-      + "}]}";
+    final String controls = createPauseInjection(PojoRecordReader.class, "read-next");
+    setControls(controls);
 
-    assertCancelled(controls, listener);
+    QueryTestUtil.testWithListener(drillClient, QueryType.SQL, TEST_QUERY, listener);
+    final Pair<QueryState, Exception> result = listener.waitForCompletion();
+    assertCompleteState(result, QueryState.COMPLETED);
   }
 
-  @Test // Cancellation TC 2
+  @Test // Cancellation TC 1: cancel before any result set is returned
+  public void cancelBeforeAnyResultsArrive() {
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener() {
+
+      @Override
+      public void queryIdArrived(final QueryId queryId) {
+        super.queryIdArrived(queryId);
+        cancelAndResume();
+      }
+    };
+
+    final String controls = createPauseInjection(Foreman.class, "foreman-ready");
+    assertCancelledWithoutException(controls, listener);
+  }
+
+  @Test // Cancellation TC 2: cancel in the middle of fetching result set
   public void cancelInMiddleOfFetchingResults() {
-    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener(1) {
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener() {
       private boolean cancelRequested = false;
 
       @Override
-      public void dataArrived(QueryDataBatch result, ConnectionThrottle throttle) {
-        if (! cancelRequested) {
-          assertTrue(queryId != null);
-          (new CancellingThread(queryId)).start();
+      public void dataArrived(final QueryDataBatch result, final ConnectionThrottle throttle) {
+        if (!cancelRequested) {
+          check(queryId != null, "Query id should not be null, since we have waited long enough.");
+          cancelAndResume();
           cancelRequested = true;
         }
         result.release();
       }
     };
 
-    final String controls = "{\"injections\":[{"
-      + "\"type\":\"pause\"," +
-      "\"siteClass\":\"" + ScreenCreator.class.getName() + "\","
-      + "\"desc\":\"sending-data\","
-      + "\"millis\":" + PAUSE_TIME_MILLIS + ","
-      + "\"nSkip\":0,"
-      + "\"nFire\":1"
-      + "}]}";
-
-    assertCancelled(controls, listener);
+    // skip once i.e. wait for one batch, so that #dataArrived above triggers #cancelAndResume
+    final String controls = createPauseInjection(ScreenCreator.class, "sending-data", 1);
+    assertCancelledWithoutException(controls, listener);
   }
 
 
-  @Test // Cancellation TC 3
+  @Test // Cancellation TC 3: cancel after all result set are produced but not all are fetched
   public void cancelAfterAllResultsProduced() {
-    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener(1) {
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener() {
       private int count = 0;
 
       @Override
-      public void dataArrived(QueryDataBatch result, ConnectionThrottle throttle) {
+      public void dataArrived(final QueryDataBatch result, final ConnectionThrottle throttle) {
         if (++count == drillbits.size()) {
-          assertTrue(queryId != null);
-          (new CancellingThread(queryId)).start();
+          check(queryId != null, "Query id should not be null, since we have waited long enough.");
+          cancelAndResume();
         }
         result.release();
       }
     };
 
-    final String controls = "{\"injections\":[{"
-      + "\"type\":\"pause\"," +
-      "\"siteClass\":\"" + ScreenCreator.class.getName() + "\","
-      + "\"desc\":\"send-complete\","
-      + "\"millis\":" + PAUSE_TIME_MILLIS + ","
-      + "\"nSkip\":0,"
-      + "\"nFire\":1"
-      + "}]}";
-
-    assertCancelled(controls, listener);
+    final String controls = createPauseInjection(ScreenCreator.class, "send-complete");
+    assertCancelledWithoutException(controls, listener);
   }
 
-  @Test // Cancellation TC 4
+  @Test // Cancellation TC 4: cancel after everything is completed and fetched
   public void cancelAfterEverythingIsCompleted() {
-    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener(1) {
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener() {
       private int count = 0;
 
       @Override
-      public void dataArrived(QueryDataBatch result, ConnectionThrottle throttle) {
+      public void dataArrived(final QueryDataBatch result, final ConnectionThrottle throttle) {
         if (++count == drillbits.size()) {
-          assertTrue(queryId != null);
-          (new CancellingThread(queryId)).start();
+          check(queryId != null, "Query id should not be null, since we have waited long enough.");
+          cancelAndResume();
         }
         result.release();
       }
     };
 
-    final String controls = "{\"injections\":[{"
-      + "\"type\":\"pause\"," +
-      "\"siteClass\":\"" + Foreman.class.getName() + "\","
-      + "\"desc\":\"foreman-cleanup\","
-      + "\"millis\":" + PAUSE_TIME_MILLIS + ","
-      + "\"nSkip\":0,"
-      + "\"nFire\":1"
-      + "}]}";
-
-    assertCancelled(controls, listener);
+    final String controls = createPauseInjection(Foreman.class, "foreman-cleanup");
+    assertCancelledWithoutException(controls, listener);
   }
 
-  @Test // Completion TC 1
+  @Test // Completion TC 1: success
   public void successfullyCompletes() {
-    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener(1);
-    QueryTestUtil.testWithListener(
-      drillClient, QueryType.SQL, TEST_QUERY, listener);
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener();
+    QueryTestUtil.testWithListener(drillClient, QueryType.SQL, TEST_QUERY, listener);
     final Pair<QueryState, Exception> result = listener.waitForCompletion();
-    assertTrue(result.getFirst() == QueryState.COMPLETED);
-    assertTrue(result.getSecond() == null);
+    assertCompleteState(result, QueryState.COMPLETED);
   }
 
   /**
@@ -586,16 +679,16 @@ public class TestDrillbitResilience {
    */
   private static void assertFailsWithException(final String controls, final Class<? extends Throwable> exceptionClass,
                                                final String exceptionDesc) {
-    setExceptions(controls);
-    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener(1);
-    QueryTestUtil.testWithListener(drillClient, QueryType.SQL,  TEST_QUERY, listener);
+    setControls(controls);
+    final WaitUntilCompleteListener listener = new WaitUntilCompleteListener();
+    QueryTestUtil.testWithListener(drillClient, QueryType.SQL, TEST_QUERY, listener);
     final Pair<QueryState, Exception> result = listener.waitForCompletion();
-    assertTrue(result.getFirst() == QueryState.FAILED);
-    final Exception e = result.getSecond();
-    assertExceptionInjected(e, exceptionClass, exceptionDesc);
+    final QueryState state = result.getFirst();
+    assertTrue(String.format("Query state should be FAILED (and not %s).", state), state == QueryState.FAILED);
+    assertExceptionInjected(result.getSecond(), exceptionClass, exceptionDesc);
   }
 
-  @Test // Completion TC 2
+  @Test // Completion TC 2: failed query - before query is executed - while sql parsing
   public void failsWhenParsing() {
     final String exceptionDesc = "sql-parsing";
     final Class<? extends Throwable> exceptionClass = ForemanSetupException.class;
@@ -603,7 +696,7 @@ public class TestDrillbitResilience {
     assertFailsWithException(controls, exceptionClass, exceptionDesc);
   }
 
-  @Test // Completion TC 3
+  @Test // Completion TC 3: failed query - before query is executed - while sending fragments to other drillbits
   public void failsWhenSendingFragments() {
     final String exceptionDesc = "send-fragments";
     final Class<? extends Throwable> exceptionClass = ForemanException.class;
@@ -611,11 +704,80 @@ public class TestDrillbitResilience {
     assertFailsWithException(controls, exceptionClass, exceptionDesc);
   }
 
-  @Test // Completion TC 4
+  @Test // Completion TC 4: failed query - during query execution
   public void failsDuringExecution() {
     final String exceptionDesc = "fragment-execution";
     final Class<? extends Throwable> exceptionClass = IOException.class;
     final String controls = createSingleException(FragmentExecutor.class, exceptionDesc, exceptionClass);
     assertFailsWithException(controls, exceptionClass, exceptionDesc);
+  }
+
+  /**
+   * Test cancelling query interrupts currently blocked FragmentExecutor threads waiting for some event to happen.
+   * Specifically tests cancelling fragment which has {@link MergingRecordBatch} blocked waiting for data.
+   */
+  @Test
+  public void testInterruptingBlockedMergingRecordBatch() {
+    final String control = createPauseInjection(MergingRecordBatch.class, "waiting-for-data", 1);
+    testInterruptingBlockedFragmentsWaitingForData(control);
+  }
+
+  /**
+   * Test cancelling query interrupts currently blocked FragmentExecutor threads waiting for some event to happen.
+   * Specifically tests cancelling fragment which has {@link UnorderedReceiverBatch} blocked waiting for data.
+   */
+  @Test
+  public void testInterruptingBlockedUnorderedReceiverBatch() {
+    final String control = createPauseInjection(UnorderedReceiverBatch.class, "waiting-for-data", 1);
+    testInterruptingBlockedFragmentsWaitingForData(control);
+  }
+
+  private static void testInterruptingBlockedFragmentsWaitingForData(final String control) {
+    try {
+      setSessionOption(SLICE_TARGET, "1");
+      setSessionOption(HASHAGG.getOptionName(), "false");
+
+      final String query = "SELECT sales_city, COUNT(*) cnt FROM cp.`region.json` GROUP BY sales_city";
+      assertCancelled(control, query, new ListenerThatCancelsQueryAfterFirstBatchOfData());
+    } finally {
+      setSessionOption(SLICE_TARGET, Long.toString(SLICE_TARGET_DEFAULT));
+      setSessionOption(HASHAGG.getOptionName(), HASHAGG.getDefault().bool_val.toString());
+    }
+  }
+
+  /**
+   * Tests interrupting the fragment thread that is running {@link PartitionSenderRootExec}.
+   * {@link PartitionSenderRootExec} spawns threads for partitioner. Interrupting fragment thread should also interrupt
+   * the partitioner threads.
+   */
+  @Test
+  public void testInterruptingPartitionerThreadFragment() {
+    try {
+      setSessionOption(SLICE_TARGET, "1");
+      setSessionOption(HASHAGG.getOptionName(), "true");
+      setSessionOption(PARTITION_SENDER_SET_THREADS.getOptionName(), "6");
+
+      final String controls = "{\"injections\" : ["
+          + "{"
+          + "\"type\" : \"latch\","
+          + "\"siteClass\" : \"" + PartitionerDecorator.class.getName() + "\","
+          + "\"desc\" : \"partitioner-sender-latch\""
+          + "},"
+          + "{"
+          + "\"type\" : \"pause\","
+          + "\"siteClass\" : \"" + PartitionerDecorator.class.getName() + "\","
+          + "\"desc\" : \"wait-for-fragment-interrupt\","
+          + "\"nSkip\" : 1"
+          + "}" +
+          "]}";
+
+      final String query = "SELECT sales_city, COUNT(*) cnt FROM cp.`region.json` GROUP BY sales_city";
+      assertCancelled(controls, query, new ListenerThatCancelsQueryAfterFirstBatchOfData());
+    } finally {
+      setSessionOption(SLICE_TARGET, Long.toString(SLICE_TARGET_DEFAULT));
+      setSessionOption(HASHAGG.getOptionName(), HASHAGG.getDefault().bool_val.toString());
+      setSessionOption(PARTITION_SENDER_SET_THREADS.getOptionName(),
+          Long.toString(PARTITION_SENDER_SET_THREADS.getDefault().num_val));
+    }
   }
 }
