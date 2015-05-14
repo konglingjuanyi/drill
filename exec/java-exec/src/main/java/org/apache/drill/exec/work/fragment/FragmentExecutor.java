@@ -145,6 +145,7 @@ public class FragmentExecutor implements Runnable {
        */
       final Thread myThread = myThreadRef.get();
       if (myThread != null) {
+        logger.debug("Interrupting fragment thread {}", myThread.getName());
         myThread.interrupt();
       }
     }
@@ -228,7 +229,6 @@ public class FragmentExecutor implements Runnable {
         }
       });
 
-      updateState(FragmentState.FINISHED);
     } catch (OutOfMemoryError | OutOfMemoryRuntimeException e) {
       if (!(e instanceof OutOfMemoryError) || "Direct buffer memory".equals(e.getMessage())) {
         fail(UserException.memoryError(e).build());
@@ -249,6 +249,7 @@ public class FragmentExecutor implements Runnable {
 
       closeOutResources();
 
+      updateState(FragmentState.FINISHED);
       // send the final state of the fragment. only the main execution thread can send the final state and it can
       // only be sent once.
       sendFinalState();
@@ -343,6 +344,8 @@ public class FragmentExecutor implements Runnable {
     case FINISHED:
       if(current == FragmentState.CANCELLATION_REQUESTED){
         target = FragmentState.CANCELLED;
+      } else if (current == FragmentState.FAILED) {
+        target = FragmentState.FAILED;
       }
       // fall-through
     case FAILED:

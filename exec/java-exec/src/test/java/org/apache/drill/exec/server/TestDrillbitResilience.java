@@ -47,6 +47,7 @@ import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.memory.TopLevelAllocator;
 import org.apache.drill.exec.physical.impl.ScreenCreator;
+import org.apache.drill.exec.physical.impl.SingleSenderCreator.SingleSenderRootExec;
 import org.apache.drill.exec.physical.impl.mergereceiver.MergingRecordBatch;
 import org.apache.drill.exec.physical.impl.partitionsender.PartitionSenderRootExec;
 import org.apache.drill.exec.physical.impl.partitionsender.PartitionerDecorator;
@@ -76,9 +77,11 @@ import org.apache.drill.exec.work.foreman.Foreman;
 import org.apache.drill.exec.work.foreman.ForemanException;
 import org.apache.drill.exec.work.foreman.ForemanSetupException;
 import org.apache.drill.exec.work.fragment.FragmentExecutor;
+import org.apache.drill.test.DrillTest;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.slf4j.Logger;
 
@@ -87,7 +90,7 @@ import org.slf4j.Logger;
  * execution by injecting exceptions at various points and to cancellations in various phases.
  * The test cases are mentioned in DRILL-2383.
  */
-public class TestDrillbitResilience {
+public class TestDrillbitResilience extends DrillTest {
   private static final Logger logger = org.slf4j.LoggerFactory.getLogger(TestDrillbitResilience.class);
 
   private static ZookeeperHelper zkHelper;
@@ -592,6 +595,7 @@ public class TestDrillbitResilience {
   }
 
   @Test // Cancellation TC 1: cancel before any result set is returned
+  @Ignore // DRILL-3052
   public void cancelBeforeAnyResultsArrive() {
     final WaitUntilCompleteListener listener = new WaitUntilCompleteListener() {
 
@@ -779,5 +783,12 @@ public class TestDrillbitResilience {
       setSessionOption(PARTITION_SENDER_SET_THREADS.getOptionName(),
           Long.toString(PARTITION_SENDER_SET_THREADS.getDefault().num_val));
     }
+  }
+
+  @Test
+  public void testInterruptingWhileFragmentIsBlockedInAcquiringSendingTicket() throws Exception {
+    final String control =
+        createPauseInjection(SingleSenderRootExec.class, "data-tunnel-send-batch-wait-for-interrupt", 1);
+    assertCancelled(control, TEST_QUERY, new ListenerThatCancelsQueryAfterFirstBatchOfData());
   }
 }
