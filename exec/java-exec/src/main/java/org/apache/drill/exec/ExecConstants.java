@@ -60,7 +60,8 @@ public interface ExecConstants {
   public static final String TEMP_DIRECTORIES = "drill.exec.tmp.directories";
   public static final String TEMP_FILESYSTEM = "drill.exec.tmp.filesystem";
   public static final String INCOMING_BUFFER_IMPL = "drill.exec.buffer.impl";
-  public static final String INCOMING_BUFFER_SIZE = "drill.exec.buffer.size"; // incoming buffer size (number of batches)
+  /** incoming buffer size (number of batches) */
+  public static final String INCOMING_BUFFER_SIZE = "drill.exec.buffer.size";
   public static final String SPOOLING_BUFFER_DELETE = "drill.exec.buffer.spooling.delete";
   public static final String SPOOLING_BUFFER_MEMORY = "drill.exec.buffer.spooling.size";
   public static final String BATCH_PURGE_THRESHOLD = "drill.exec.sort.purge.threshold";
@@ -86,6 +87,9 @@ public interface ExecConstants {
   public static final String USER_AUTHENTICATOR_IMPL = "drill.exec.security.user.auth.impl";
   public static final String PAM_AUTHENTICATOR_PROFILES = "drill.exec.security.user.auth.pam_profiles";
   public static final String ERROR_ON_MEMORY_LEAK = "drill.exec.debug.error_on_leak";
+  /** Size of JDBC batch queue (in batches) above which throttling begins. */
+  public static final String JDBC_BATCH_QUEUE_THROTTLING_THRESHOLD =
+      "drill.jdbc.batch_queue_throttling_threshold";
 
   /**
    * Currently if a query is cancelled, but one of the fragments reports the status as FAILED instead of CANCELLED or

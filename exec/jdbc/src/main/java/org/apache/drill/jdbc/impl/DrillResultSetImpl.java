@@ -31,6 +31,7 @@ import net.hydromatic.avatica.AvaticaResultSet;
 import net.hydromatic.avatica.AvaticaStatement;
 
 import org.apache.drill.common.exceptions.UserException;
+import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.client.DrillClient;
 import org.apache.drill.exec.proto.UserBitShared.QueryId;
 import org.apache.drill.exec.proto.UserBitShared.QueryResult.QueryState;
@@ -58,10 +59,12 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
   @SuppressWarnings("unused")
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(DrillResultSetImpl.class);
 
+  private final DrillStatementImpl statement;
+
   // (Public until JDBC impl. classes moved out of published-intf. package. (DRILL-2089).)
   public SchemaChangeListener changeListener;
   // (Public until JDBC impl. classes moved out of published-intf. package. (DRILL-2089).)
-  public final ResultsListener resultsListener = new ResultsListener();
+  public final ResultsListener resultsListener;
   private final DrillClient client;
   // (Public until JDBC impl. classes moved out of published-intf. package. (DRILL-2089).)
   // TODO:  Resolve:  Since is barely manipulated here in DrillResultSetImpl,
@@ -71,15 +74,23 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
   public final DrillCursor cursor;
   public boolean hasPendingCancelationNotification;
 
-  public DrillResultSetImpl(AvaticaStatement statement, AvaticaPrepareResult prepareResult,
+  public DrillResultSetImpl(DrillStatementImpl statement, AvaticaPrepareResult prepareResult,
                             ResultSetMetaData resultSetMetaData, TimeZone timeZone) {
     super(statement, prepareResult, resultSetMetaData, timeZone);
+    this.statement = statement;
+    final int batchQueueThrottlingThreshold =
+        this.getStatement().getConnection().getClient().getConfig().getInt(
+            ExecConstants.JDBC_BATCH_QUEUE_THROTTLING_THRESHOLD );
+    resultsListener = new ResultsListener( batchQueueThrottlingThreshold );
     DrillConnection c = (DrillConnection) statement.getConnection();
     DrillClient client = c.getClient();
-    // DrillClient client, DrillStatement statement) {
     currentBatch = new RecordBatchLoader(client.getAllocator());
     this.client = client;
     cursor = new DrillCursor(this);
+  }
+
+  public DrillStatementImpl getStatement() {
+    return statement;
   }
 
   /**
@@ -171,8 +182,8 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
   }
 
   public String getQueryId() {
-    if (resultsListener.queryId != null) {
-      return QueryIdHelper.getQueryId(resultsListener.queryId);
+    if (resultsListener.getQueryId() != null) {
+      return QueryIdHelper.getQueryId(resultsListener.getQueryId());
     } else {
       return null;
     }
@@ -180,11 +191,22 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
 
   // (Public until JDBC impl. classes moved out of published-intf. package. (DRILL-2089).)
   public static class ResultsListener implements UserResultsListener {
-    private static Logger logger = getLogger( ResultsListener.class );
+    private static final Logger logger = getLogger( ResultsListener.class );
 
-    private static final int THROTTLING_QUEUE_SIZE_THRESHOLD = 100;
+    private static volatile int nextInstanceId = 1;
 
+    /** (Just for logging.) */
+    private final int instanceId;
+
+    private final int batchQueueThrottlingThreshold;
+
+    /** (Just for logging.) */
     private volatile QueryId queryId;
+
+    /** (Just for logging.) */
+    private int lastReceivedBatchNumber;
+    /** (Just for logging.) */
+    private int lastDequeuedBatchNumber;
 
     private volatile UserException executionFailureException;
 
@@ -209,8 +231,15 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
         Queues.newLinkedBlockingDeque();
 
 
-    ResultsListener() {
-      logger.debug( "Query listener created." );
+    /**
+     * ...
+     * @param  batchQueueThrottlingThreshold
+     *         queue size threshold for throttling server
+     */
+    ResultsListener( int batchQueueThrottlingThreshold ) {
+      instanceId = nextInstanceId++;
+      this.batchQueueThrottlingThreshold = batchQueueThrottlingThreshold;
+      logger.debug( "[#{}] Query listener created.", instanceId );
     }
 
     /**
@@ -228,7 +257,7 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
     }
 
     /**
-     * Stops throttling if currently active.
+     * Stops throttling if currently throttling.
      * @return  true if actually stopped (was throttling)
      */
     private boolean stopThrottlingIfSo() {
@@ -252,22 +281,25 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
 
     @Override
     public void queryIdArrived(QueryId queryId) {
-      logger.debug( "Received query ID: {}.", queryId );
+      logger.debug( "[#{}] Received query ID: {}.",
+                    instanceId, QueryIdHelper.getQueryId( queryId ) );
       this.queryId = queryId;
     }
 
     @Override
     public void submissionFailed(UserException ex) {
-      logger.debug( "Received query failure:", ex );
+      logger.debug( "Received query failure:", instanceId, ex );
       this.executionFailureException = ex;
       completed = true;
       close();
-      logger.info( "Query failed: ", ex );
+      logger.info( "[#{}] Query failed: ", instanceId, ex );
     }
 
     @Override
     public void dataArrived(QueryDataBatch result, ConnectionThrottle throttle) {
-      logger.debug( "Received query data batch: {}.", result );
+      lastReceivedBatchNumber++;
+      logger.debug( "[#{}] Received query data batch #{}: {}.",
+                    instanceId, lastReceivedBatchNumber, result );
 
       // If we're in a closed state, just release the message.
       if (closed) {
@@ -280,9 +312,12 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
 
       // We're active; let's add to the queue.
       batchQueue.add(result);
-      if (batchQueue.size() >= THROTTLING_QUEUE_SIZE_THRESHOLD - 1) {
+
+      // Throttle server if queue size has exceed threshold.
+      if (batchQueue.size() > batchQueueThrottlingThreshold ) {
         if ( startThrottlingIfNot( throttle ) ) {
-          logger.debug( "Throttling started at queue size {}.", batchQueue.size() );
+          logger.debug( "[#{}] Throttling started at queue size {}.",
+                        instanceId, batchQueue.size() );
         }
       }
 
@@ -291,7 +326,7 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
 
     @Override
     public void queryCompleted(QueryState state) {
-      logger.debug( "Received query completion: {}.", state );
+      logger.debug( "[#{}] Received query completion: {}.", instanceId, state );
       releaseIfFirst();
       completed = true;
     }
@@ -313,41 +348,50 @@ public class DrillResultSetImpl extends AvaticaResultSet implements DrillResultS
                                            InterruptedException {
       while (true) {
         if (executionFailureException != null) {
-          logger.debug( "Dequeued query failure exception: {}.", executionFailureException );
+          logger.debug( "[#{}] Dequeued query failure exception: {}.",
+                        instanceId, executionFailureException );
           throw executionFailureException;
         }
         if (completed && batchQueue.isEmpty()) {
           return null;
         } else {
-          QueryDataBatch q = batchQueue.poll(50, TimeUnit.MILLISECONDS);
-          if (q != null) {
-            assert THROTTLING_QUEUE_SIZE_THRESHOLD >= 2;
-            if (batchQueue.size() < THROTTLING_QUEUE_SIZE_THRESHOLD / 2) {
+          QueryDataBatch qdb = batchQueue.poll(50, TimeUnit.MILLISECONDS);
+          if (qdb != null) {
+            lastDequeuedBatchNumber++;
+            logger.debug( "[#{}] Dequeued query data batch #{}: {}.",
+                          instanceId, lastDequeuedBatchNumber, qdb );
+
+            // Unthrottle server if queue size has dropped enough below threshold:
+            if ( batchQueue.size() < batchQueueThrottlingThreshold / 2
+                 || batchQueue.size() == 0  // (in case threshold < 2)
+                 ) {
               if ( stopThrottlingIfSo() ) {
-                logger.debug( "Throttling stopped at queue size {}.",
-                              batchQueue.size() );
+                logger.debug( "[#{}] Throttling stopped at queue size {}.",
+                              instanceId, batchQueue.size() );
               }
             }
-            logger.debug( "Dequeued query data batch: {}.", q );
-            return q;
+            return qdb;
           }
         }
       }
     }
 
     void close() {
+      logger.debug( "[#{}] Query listener closing.", instanceId );
       closed = true;
       if ( stopThrottlingIfSo() ) {
-        logger.debug( "Throttling stopped at close() (at queue size {}).", batchQueue.size() );
+        logger.debug( "[#{}] Throttling stopped at close() (at queue size {}).",
+                      instanceId, batchQueue.size() );
       }
       while (!batchQueue.isEmpty()) {
-        QueryDataBatch qrb = batchQueue.poll();
-        if (qrb != null && qrb.getData() != null) {
-          qrb.getData().release();
+        QueryDataBatch qdb = batchQueue.poll();
+        if (qdb != null && qdb.getData() != null) {
+          qdb.getData().release();
         }
       }
-      // close may be called before the first result is received and the main thread is blocked waiting
-      // for the result. In that case we want to unblock the main thread.
+      // Close may be called before the first result is received and therefore
+      // when the main thread is blocked waiting for the result.  In that case
+      // we want to unblock the main thread.
       latch.countDown(); // TODO:  Why not call releaseIfFirst as used elsewhere?
       completed = true;
     }
