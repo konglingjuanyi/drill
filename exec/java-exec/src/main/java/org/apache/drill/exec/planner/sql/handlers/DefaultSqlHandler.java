@@ -27,38 +27,21 @@ import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.plan.hep.HepPlanner;
 import org.apache.calcite.rel.RelNode;
-import com.google.common.collect.ImmutableList;
-import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.hep.HepMatchOrder;
 import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.plan.hep.HepProgramBuilder;
 import org.apache.calcite.rel.RelShuttleImpl;
-import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Join;
-import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.core.TableFunctionScan;
 import org.apache.calcite.rel.core.TableScan;
-import org.apache.calcite.rel.logical.LogicalJoin;
-import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalValues;
 import org.apache.calcite.rel.metadata.CachingRelMetadataProvider;
 import org.apache.calcite.rel.metadata.ChainedRelMetadataProvider;
-import org.apache.calcite.rel.metadata.DefaultRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMetadataProvider;
-import org.apache.calcite.rel.rules.FilterAggregateTransposeRule;
-import org.apache.calcite.rel.rules.FilterJoinRule;
-import org.apache.calcite.rel.rules.FilterMergeRule;
-import org.apache.calcite.rel.rules.FilterProjectTransposeRule;
-import org.apache.calcite.rel.rules.JoinPushThroughJoinRule;
-import org.apache.calcite.rel.rules.JoinPushTransitivePredicatesRule;
 import org.apache.calcite.rel.rules.JoinToMultiJoinRule;
 import org.apache.calcite.rel.rules.LoptOptimizeJoinRule;
-import org.apache.calcite.rel.rules.ProjectMergeRule;
 import org.apache.calcite.rel.rules.ProjectRemoveRule;
-import org.apache.calcite.rel.rules.SemiJoinFilterTransposeRule;
-import org.apache.calcite.rel.rules.SemiJoinJoinTransposeRule;
-import org.apache.calcite.rel.rules.SemiJoinProjectTransposeRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexNode;
@@ -67,7 +50,6 @@ import org.apache.calcite.sql.SqlExplainLevel;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.TypedSqlNode;
 import org.apache.calcite.sql.validate.SqlValidatorUtil;
-import org.apache.calcite.sql2rel.RelFieldTrimmer;
 import org.apache.calcite.tools.Planner;
 import org.apache.calcite.tools.RelConversionException;
 import org.apache.calcite.tools.ValidationException;
@@ -83,12 +65,8 @@ import org.apache.drill.exec.physical.base.AbstractPhysicalVisitor;
 import org.apache.drill.exec.physical.base.PhysicalOperator;
 import org.apache.drill.exec.physical.impl.join.JoinUtils;
 import org.apache.drill.exec.planner.cost.DrillDefaultRelMetadataProvider;
-import org.apache.drill.exec.planner.logical.DrillFilterJoinRules;
 import org.apache.drill.exec.planner.logical.DrillJoinRel;
-import org.apache.drill.exec.planner.logical.DrillMergeProjectRule;
 import org.apache.drill.exec.planner.logical.DrillProjectRel;
-import org.apache.drill.exec.planner.logical.DrillPushFilterPastProjectRule;
-import org.apache.drill.exec.planner.logical.DrillPushProjectPastFilterRule;
 import org.apache.drill.exec.planner.logical.DrillRel;
 import org.apache.drill.exec.planner.logical.DrillRelFactories;
 import org.apache.drill.exec.planner.logical.DrillScreenRel;
@@ -123,9 +101,10 @@ import org.apache.drill.exec.work.foreman.UnsupportedRelOperatorException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
+import org.slf4j.Logger;
 
 public class DefaultSqlHandler extends AbstractSqlHandler {
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(DefaultSqlHandler.class);
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(DefaultSqlHandler.class);
 
   protected final SqlHandlerConfig config;
   protected final QueryContext context;
@@ -148,13 +127,13 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
     targetSliceSize = context.getOptions().getOption(ExecConstants.SLICE_TARGET).num_val;
   }
 
-  protected void log(String name, RelNode node) {
+  protected static void log(final String name, final RelNode node, final Logger logger) {
     if (logger.isDebugEnabled()) {
       logger.debug(name + " : \n" + RelOptUtil.toString(node, SqlExplainLevel.ALL_ATTRIBUTES));
     }
   }
 
-  protected void log(String name, Prel node) {
+  protected void log(final String name, final Prel node, final Logger logger) {
     String plan = PrelSequencer.printWithIds(node, SqlExplainLevel.ALL_ATTRIBUTES);
     if(textPlan != null){
       textPlan.value = plan;
@@ -165,120 +144,71 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
     }
   }
 
-  protected void log(String name, PhysicalPlan plan) throws JsonProcessingException {
+  protected void log(final String name, final PhysicalPlan plan, final Logger logger) throws JsonProcessingException {
     if (logger.isDebugEnabled()) {
       String planText = plan.unparse(context.getConfig().getMapper().writer());
       logger.debug(name + " : \n" + planText);
     }
   }
 
+
   @Override
   public PhysicalPlan getPlan(SqlNode sqlNode) throws ValidationException, RelConversionException, IOException, ForemanSetupException {
-    SqlNode rewrittenSqlNode = rewrite(sqlNode);
-    TypedSqlNode validatedTypedSqlNode = validateNode(rewrittenSqlNode);
-    SqlNode validated = validatedTypedSqlNode.getSqlNode();
-    RelDataType validatedRowType = validatedTypedSqlNode.getType();
+    final ConvertedRelNode convertedRelNode = validateAndConvert(sqlNode);
+    final RelDataType validatedRowType = convertedRelNode.getValidatedRowType();
+    final RelNode queryRelNode = convertedRelNode.getConvertedNode();
+
+    log("Optiq Logical", queryRelNode, logger);
+    DrillRel drel = convertToDrel(queryRelNode, validatedRowType);
+
+    log("Drill Logical", drel, logger);
+    Prel prel = convertToPrel(drel);
+    log("Drill Physical", prel, logger);
+    PhysicalOperator pop = convertToPop(prel);
+    PhysicalPlan plan = convertToPlan(pop);
+    log("Drill Plan", plan, logger);
+    return plan;
+  }
+
+
+  /**
+   * Rewrite the parse tree. Used before validating the parse tree. Useful if a particular statement needs to converted
+   * into another statement.
+   *
+   * @param node
+   * @return Rewritten sql parse tree
+   * @throws RelConversionException
+   */
+  protected SqlNode rewrite(SqlNode node) throws RelConversionException, ForemanSetupException {
+    return node;
+  }
+
+  protected ConvertedRelNode validateAndConvert(SqlNode sqlNode) throws ForemanSetupException, RelConversionException, ValidationException {
+    final SqlNode rewrittenSqlNode = rewrite(sqlNode);
+    final TypedSqlNode validatedTypedSqlNode = validateNode(rewrittenSqlNode);
+    final SqlNode validated = validatedTypedSqlNode.getSqlNode();
 
     RelNode rel = convertToRel(validated);
     rel = preprocessNode(rel);
 
-
-    log("Optiq Logical", rel);
-    DrillRel drel = convertToDrel(rel, validatedRowType);
-
-    log("Drill Logical", drel);
-    Prel prel = convertToPrel(drel);
-    log("Drill Physical", prel);
-    PhysicalOperator pop = convertToPop(prel);
-    PhysicalPlan plan = convertToPlan(pop);
-    log("Drill Plan", plan);
-    return plan;
+    return new ConvertedRelNode(rel, validatedTypedSqlNode.getType());
   }
 
-  protected DrillRel addRenamedProject(DrillRel rel, RelDataType validatedRowType) {
-    RelDataType t = rel.getRowType();
-
-    RexBuilder b = rel.getCluster().getRexBuilder();
-    List<RexNode> projections = Lists.newArrayList();
-    int projectCount = t.getFieldList().size();
-
-    for (int i =0; i < projectCount; i++) {
-      projections.add(b.makeInputRef(rel, i));
-    }
-
-    final List<String> fieldNames2 = SqlValidatorUtil.uniquify(validatedRowType.getFieldNames(), SqlValidatorUtil.F_SUGGESTER2);
-
-    RelDataType newRowType = RexUtil.createStructType(rel.getCluster().getTypeFactory(), projections, fieldNames2);
-
-    DrillProjectRel topProj = DrillProjectRel.create(rel.getCluster(), rel.getTraitSet(), rel, projections, newRowType);
-
-    if (ProjectRemoveRule.isTrivial(topProj, true)) {
-      return rel;
-    } else{
-      return topProj;
-    }
-    //return RelOptUtil.createProject(rel, projections, fieldNames2);
-
-  }
-
-
-  protected TypedSqlNode validateNode(SqlNode sqlNode) throws ValidationException, RelConversionException, ForemanSetupException {
-    TypedSqlNode typedSqlNode = planner.validateAndGetType(sqlNode);
-
-    SqlNode sqlNodeValidated = typedSqlNode.getSqlNode();
-
-    // Check if the unsupported functionality is used
-    UnsupportedOperatorsVisitor visitor = UnsupportedOperatorsVisitor.createVisitor(context);
+  /**
+   *  Given a relNode tree for SELECT statement, convert to Drill Logical RelNode tree.
+   * @param relNode
+   * @return
+   * @throws SqlUnsupportedException
+   * @throws RelConversionException
+   */
+  protected DrillRel convertToDrel(RelNode relNode) throws SqlUnsupportedException, RelConversionException {
     try {
-      sqlNodeValidated.accept(visitor);
-    } catch (UnsupportedOperationException ex) {
-      // If the exception due to the unsupported functionalities
-      visitor.convertException();
-
-      // If it is not, let this exception move forward to higher logic
-      throw ex;
-    }
-
-    return typedSqlNode;
-  }
-
-  protected RelNode convertToRel(SqlNode node) throws RelConversionException {
-    RelNode convertedNode = planner.convert(node);
-    hepPlanner.setRoot(convertedNode);
-    RelNode rel = hepPlanner.findBestExp();
-
-    return rel;
-  }
-
-  protected RelNode preprocessNode(RelNode rel) throws SqlUnsupportedException {
-    /*
-     * Traverse the tree to do the following pre-processing tasks: 1. replace the convert_from, convert_to function to
-     * actual implementations Eg: convert_from(EXPR, 'JSON') be converted to convert_fromjson(EXPR); TODO: Ideally all
-     * function rewrites would move here instead of DrillOptiq.
-     *
-     * 2. see where the tree contains unsupported functions; throw SqlUnsupportedException if there is any.
-     */
-
-    PreProcessLogicalRel visitor = PreProcessLogicalRel.createVisitor(planner.getTypeFactory(),
-        context.getDrillOperatorTable());
-    try {
-      rel = rel.accept(visitor);
-    } catch (UnsupportedOperationException ex) {
-      visitor.convertException();
-      throw ex;
-    }
-
-    return rel;
-  }
-
-  protected DrillRel convertToDrel(RelNode relNode, RelDataType validatedRowType) throws RelConversionException, SqlUnsupportedException {
-    try {
-      RelNode convertedRelNode;
+      final DrillRel convertedRelNode;
 
       if (! context.getPlannerSettings().isHepJoinOptEnabled()) {
-        convertedRelNode = logicalPlanningVolcano(relNode);
+        convertedRelNode = (DrillRel) logicalPlanningVolcano(relNode);
       } else {
-        convertedRelNode = logicalPlanningVolcanoAndLopt(relNode);
+        convertedRelNode = (DrillRel) logicalPlanningVolcanoAndLopt(relNode);
       }
 
       if (convertedRelNode instanceof DrillStoreRel) {
@@ -290,10 +220,7 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
           context.getPlannerSettings().forceSingleMode();
         }
 
-        // Put a non-trivial topProject to ensure the final output field name is preserved, when necessary.
-        DrillRel topPreservedNameProj = addRenamedProject((DrillRel) convertedRelNode, validatedRowType);
-        return new DrillScreenRel(topPreservedNameProj.getCluster(), topPreservedNameProj.getTraitSet(),
-            topPreservedNameProj);
+        return convertedRelNode;
       }
     } catch (RelOptPlanner.CannotPlanException ex) {
       logger.error(ex.getMessage());
@@ -304,6 +231,24 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
         throw ex;
       }
     }
+  }
+
+  /**
+   * Return Drill Logical RelNode tree for a SELECT statement, when it is executed / explained directly.
+   *
+   * @param relNode : root RelNode corresponds to Calcite Logical RelNode.
+   * @param validatedRowType : the rowType for the final field names. A rename project may be placed on top of the root.
+   * @return
+   * @throws RelConversionException
+   * @throws SqlUnsupportedException
+   */
+  protected DrillRel convertToDrel(RelNode relNode, RelDataType validatedRowType) throws RelConversionException, SqlUnsupportedException {
+    final DrillRel convertedRelNode = convertToDrel(relNode);
+
+    // Put a non-trivial topProject to ensure the final output field name is preserved, when necessary.
+    DrillRel topPreservedNameProj = addRenamedProject((DrillRel) convertedRelNode, validatedRowType);
+    return new DrillScreenRel(topPreservedNameProj.getCluster(), topPreservedNameProj.getTraitSet(),
+        topPreservedNameProj);
   }
 
 
@@ -327,7 +272,7 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
 
     if (context.getPlannerSettings().isMemoryEstimationEnabled()
       && !MemoryEstimationVisitor.enoughMemory(phyRelNode, queryOptions, context.getActiveEndpoints().size())) {
-      log("Not enough memory for this plan", phyRelNode);
+      log("Not enough memory for this plan", phyRelNode, logger);
       logger.debug("Re-planning without hash operations.");
 
       queryOptions.setOption(OptionValue.createBoolean(OptionValue.OptionType.QUERY, PlannerSettings.HASHJOIN.getOptionName(), false));
@@ -479,17 +424,79 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
 
   }
 
-  /**
-   * Rewrite the parse tree. Used before validating the parse tree. Useful if a particular statement needs to converted
-   * into another statement.
-   *
-   * @param node
-   * @return Rewritten sql parse tree
-   * @throws RelConversionException
-   */
-  public SqlNode rewrite(SqlNode node) throws RelConversionException, ForemanSetupException {
-    return node;
+  private TypedSqlNode validateNode(SqlNode sqlNode) throws ValidationException, RelConversionException, ForemanSetupException {
+    TypedSqlNode typedSqlNode = planner.validateAndGetType(sqlNode);
+
+    SqlNode sqlNodeValidated = typedSqlNode.getSqlNode();
+
+    // Check if the unsupported functionality is used
+    UnsupportedOperatorsVisitor visitor = UnsupportedOperatorsVisitor.createVisitor(context);
+    try {
+      sqlNodeValidated.accept(visitor);
+    } catch (UnsupportedOperationException ex) {
+      // If the exception due to the unsupported functionalities
+      visitor.convertException();
+
+      // If it is not, let this exception move forward to higher logic
+      throw ex;
+    }
+
+    return typedSqlNode;
   }
+
+  private RelNode convertToRel(SqlNode node) throws RelConversionException {
+    RelNode convertedNode = planner.convert(node);
+    hepPlanner.setRoot(convertedNode);
+    RelNode rel = hepPlanner.findBestExp();
+
+    return rel;
+  }
+
+  private RelNode preprocessNode(RelNode rel) throws SqlUnsupportedException {
+    /*
+     * Traverse the tree to do the following pre-processing tasks: 1. replace the convert_from, convert_to function to
+     * actual implementations Eg: convert_from(EXPR, 'JSON') be converted to convert_fromjson(EXPR); TODO: Ideally all
+     * function rewrites would move here instead of DrillOptiq.
+     *
+     * 2. see where the tree contains unsupported functions; throw SqlUnsupportedException if there is any.
+     */
+
+    PreProcessLogicalRel visitor = PreProcessLogicalRel.createVisitor(planner.getTypeFactory(),
+        context.getDrillOperatorTable());
+    try {
+      rel = rel.accept(visitor);
+    } catch (UnsupportedOperationException ex) {
+      visitor.convertException();
+      throw ex;
+    }
+
+    return rel;
+  }
+
+  protected DrillRel addRenamedProject(DrillRel rel, RelDataType validatedRowType) {
+    RelDataType t = rel.getRowType();
+
+    RexBuilder b = rel.getCluster().getRexBuilder();
+    List<RexNode> projections = Lists.newArrayList();
+    int projectCount = t.getFieldList().size();
+
+    for (int i =0; i < projectCount; i++) {
+      projections.add(b.makeInputRef(rel, i));
+    }
+
+    final List<String> fieldNames2 = SqlValidatorUtil.uniquify(validatedRowType.getFieldNames(), SqlValidatorUtil.F_SUGGESTER2);
+
+    RelDataType newRowType = RexUtil.createStructType(rel.getCluster().getTypeFactory(), projections, fieldNames2);
+
+    DrillProjectRel topProj = DrillProjectRel.create(rel.getCluster(), rel.getTraitSet(), rel, projections, newRowType);
+
+    if (ProjectRemoveRule.isTrivial(topProj, true)) {
+      return rel;
+    } else{
+      return topProj;
+    }
+  }
+
 
   private RelNode logicalPlanningVolcano(RelNode relNode) throws RelConversionException, SqlUnsupportedException {
     return planner.transform(DrillSqlWorker.LOGICAL_RULES, relNode.getTraitSet().plus(DrillRel.DRILL_LOGICAL), relNode);
@@ -505,7 +512,7 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
   private RelNode logicalPlanningVolcanoAndLopt(RelNode relNode) throws RelConversionException, SqlUnsupportedException {
 
     final RelNode convertedRelNode = planner.transform(DrillSqlWorker.LOGICAL_CONVERT_RULES, relNode.getTraitSet().plus(DrillRel.DRILL_LOGICAL), relNode);
-    log("VolCalciteRel", convertedRelNode);
+    log("VolCalciteRel", convertedRelNode, logger);
 
     final RelNode loptNode = getLoptJoinOrderTree(
         convertedRelNode,
@@ -514,7 +521,7 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
         DrillRelFactories.DRILL_LOGICAL_FILTER_FACTORY,
         DrillRelFactories.DRILL_LOGICAL_PROJECT_FACTORY);
 
-    log("HepCalciteRel", loptNode);
+    log("HepCalciteRel", loptNode, logger);
 
     return loptNode;
   }
@@ -523,7 +530,7 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
   /**
    * Appy Join Order Optimizations using Hep Planner.
    */
-  public RelNode getLoptJoinOrderTree(RelNode root,
+  private RelNode getLoptJoinOrderTree(RelNode root,
                                       Class<? extends Join> joinClass,
                                              RelFactories.JoinFactory joinFactory,
                                              RelFactories.FilterFactory filterFactory,
@@ -589,4 +596,24 @@ public class DefaultSqlHandler extends AbstractSqlHandler {
       return parent;
     }
   }
+
+  protected class ConvertedRelNode {
+    private final RelNode relNode;
+    private final RelDataType validatedRowType;
+
+    public ConvertedRelNode(RelNode relNode, RelDataType validatedRowType) {
+      this.relNode = relNode;
+      this.validatedRowType = validatedRowType;
+    }
+
+    public RelNode getConvertedNode() {
+      return this.relNode;
+    }
+
+    public RelDataType getValidatedRowType() {
+      return this.validatedRowType;
+    }
+  }
+
+
 }

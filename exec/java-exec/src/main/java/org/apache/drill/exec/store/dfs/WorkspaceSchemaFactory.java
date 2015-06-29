@@ -31,6 +31,7 @@ import org.apache.calcite.schema.Table;
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.common.exceptions.UserException;
+import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.dotdrill.DotDrillFile;
 import org.apache.drill.exec.dotdrill.DotDrillType;
@@ -174,7 +175,7 @@ public class WorkspaceSchemaFactory {
           throw UserException
               .permissionError(e)
               .message("Not authorized to list view tables in schema [%s]", getFullSchemaName())
-              .build();
+              .build(logger);
         }
       } catch (Exception e) {
         logger.warn("Failure while trying to list .view.drill files in workspace [{}]", getFullSchemaName(), e);
@@ -208,10 +209,9 @@ public class WorkspaceSchemaFactory {
         } catch(AccessControlException e) {
           if (!schemaConfig.getIgnoreAuthErrors()) {
             logger.debug(e.getMessage());
-            throw UserException
-                .permissionError(e)
-                .message("Not authorized to list or query tables in schema [%s]", getFullSchemaName())
-                .build();
+            throw UserException.permissionError(e)
+              .message("Not authorized to list or query tables in schema [%s]", getFullSchemaName())
+              .build(logger);
           }
         } catch(IOException e) {
           logger.warn("Failure while trying to list view tables in workspace [{}]", name, getFullSchemaName(), e);
@@ -225,10 +225,9 @@ public class WorkspaceSchemaFactory {
             } catch (AccessControlException e) {
               if (!schemaConfig.getIgnoreAuthErrors()) {
                 logger.debug(e.getMessage());
-                throw UserException
-                    .permissionError(e)
-                    .message("Not authorized to read view [%s] in schema [%s]", name, getFullSchemaName())
-                    .build();
+                throw UserException.permissionError(e)
+                  .message("Not authorized to read view [%s] in schema [%s]", name, getFullSchemaName())
+                  .build(logger);
               }
             } catch (IOException e) {
               logger.warn("Failure while trying to load {}.view.drill file in workspace [{}]", name, getFullSchemaName(), e);
@@ -256,7 +255,7 @@ public class WorkspaceSchemaFactory {
     }
 
     @Override
-    public CreateTableEntry createNewTable(String tableName) {
+    public CreateTableEntry createNewTable(String tableName, List<String> partitonColumns) {
       String storage = schemaConfig.getOption(ExecConstants.OUTPUT_FORMAT_OPTION).string_val;
       FormatPlugin formatPlugin = plugin.getFormatPlugin(storage);
       if (formatPlugin == null) {
@@ -268,7 +267,8 @@ public class WorkspaceSchemaFactory {
       return new FileSystemCreateTableEntry(
           (FileSystemConfig) plugin.getConfig(),
           formatPlugin,
-          config.getLocation() + Path.SEPARATOR + tableName);
+          config.getLocation() + Path.SEPARATOR + tableName,
+          partitonColumns);
     }
 
     @Override
@@ -310,10 +310,9 @@ public class WorkspaceSchemaFactory {
       } catch (AccessControlException e) {
         if (!schemaConfig.getIgnoreAuthErrors()) {
           logger.debug(e.getMessage());
-          throw UserException
-              .permissionError(e)
-              .message("Not authorized to read table [%s] in schema [%s]", key, getFullSchemaName())
-              .build();
+          throw UserException.permissionError(e)
+            .message("Not authorized to read table [%s] in schema [%s]", key, getFullSchemaName())
+            .build(logger);
         }
       } catch (IOException e) {
         logger.debug("Failed to create DrillTable with root {} and name {}", config.getLocation(), key, e);

@@ -43,6 +43,9 @@ import static java.sql.ResultSetMetaData.columnNullableUnknown;
 import java.sql.SQLException;
 import java.sql.Types;
 
+// NOTE: TempInformationSchemaColumnsTest and DatabaseMetaDataGetColumnsTest
+// have identical sections.  (Cross-maintain them for now; factor out later.)
+
 // TODO:  MOVE notes to implementation (have this not (just) in test).
 
 // TODO:  Determine for each numeric type whether its precision is reported in
@@ -51,7 +54,7 @@ import java.sql.Types;
 //   radix for each numeric type:
 //   - 2 or 10 for SMALLINT, INTEGER, and BIGINT;
 //   - only 10 for NUMERIC and DECIMAL; and
-//   - only 2  for REAL, DOUBLE PRECISION, and FLOAT.
+//   - only 2  for REAL, FLOAT, and DOUBLE PRECISION.
 //   However, it is not clear what the JDBC API intends:
 //   - It has NUM_PREC_RADIX, specifying a radix or 10 or 2, but doesn't specify
 //     exactly what is applies to.  Apparently, it applies to COLUMN_SIZE abd
@@ -82,9 +85,9 @@ import java.sql.Types;
  */
 public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
+  private static final String VIEW_SCHEMA = "dfs_test.tmp";
   private static final String VIEW_NAME =
       DatabaseMetaDataGetColumnsTest.class.getSimpleName() + "_View";
-
 
   /** The one shared JDBC connection to Drill. */
   private static Connection connection;
@@ -105,19 +108,19 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   //////////
   // For columns in temporary test view (types accessible via casting):
-  // TODO:  Determine whether any other data types are accessible via CAST
-  // and add them.
 
   private static ResultSet mdrOptBOOLEAN;
 
+  // TODO(DRILL-2470): re-enable TINYINT, SMALLINT, and REAL.
   private static ResultSet mdrReqTINYINT;
   private static ResultSet mdrOptSMALLINT;
   private static ResultSet mdrReqINTEGER;
   private static ResultSet mdrOptBIGINT;
 
+  // TODO(DRILL-2470): re-enable TINYINT, SMALLINT, and REAL.
+  private static ResultSet mdrOptREAL;
   private static ResultSet mdrOptFLOAT;
   private static ResultSet mdrReqDOUBLE;
-  private static ResultSet mdrOptREAL;
 
   private static ResultSet mdrReqDECIMAL_5_3;
   // No NUMERIC while Drill just maps it to DECIMAL.
@@ -130,12 +133,26 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   private static ResultSet mdrOptBINARY_1048576;
 
   private static ResultSet mdrReqDATE;
-  private static ResultSet mdrOptTIME;
+  private static ResultSet mdrReqTIME;
   private static ResultSet mdrOptTIME_7;
   private static ResultSet mdrOptTIMESTAMP;
   // No "... WITH TIME ZONE" in Drill.
-  private static ResultSet mdrOptINTERVAL_H_S3;
-  private static ResultSet mdrOptINTERVAL_Y4;
+
+  private static ResultSet mdrReqINTERVAL_Y;
+  private static ResultSet mdrReqINTERVAL_3Y_Mo;
+  private static ResultSet mdrReqINTERVAL_Mo;
+  private static ResultSet mdrReqINTERVAL_D;
+  private static ResultSet mdrReqINTERVAL_4D_H;
+  private static ResultSet mdrReqINTERVAL_3D_Mi;
+  private static ResultSet mdrReqINTERVAL_2D_S5;
+  private static ResultSet mdrReqINTERVAL_H;
+  private static ResultSet mdrReqINTERVAL_1H_Mi;
+  private static ResultSet mdrReqINTERVAL_3H_S1;
+  private static ResultSet mdrReqINTERVAL_Mi;
+  private static ResultSet mdrReqINTERVAL_5Mi_S;
+  private static ResultSet mdrReqINTERVAL_S;
+  private static ResultSet mdrReqINTERVAL_3S;
+  private static ResultSet mdrReqINTERVAL_3S1;
 
   // For columns in schema hive_test.default's infoschematest table:
 
@@ -145,21 +162,24 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   private static ResultSet mdrReqMAP;
   // structtype column:    STRUCT(INTEGER sint, BOOLEAN sboolean,
   //                              VARCHAR(65535) sstring), non-null(?):
-  private static ResultSet testRowSTRUCT;
+  private static ResultSet mdrUnkSTRUCT;
   // uniontypetype column: OTHER (?), non=nullable(?):
-  private static ResultSet testRowUnion;
+  private static ResultSet mdrUnkUnion;
 
 
   private static ResultSet setUpRow( final String schemaName,
                                      final String tableOrViewName,
                                      final String columnName ) throws SQLException
   {
-    System.out.println( "(Setting up row for " + tableOrViewName + "." + columnName + ".)");
-    assertNotNull("dbMetadata is null; must be set before calling setUpRow(...)", dbMetadata);
+    System.out.println( "(Setting up row for " + tableOrViewName + "."
+                        + columnName + ".)");
+    assertNotNull( "dbMetadata is null; must be set before calling setUpRow(...)",
+                   dbMetadata );
     final ResultSet testRow =
         dbMetadata.getColumns( "DRILL", schemaName, tableOrViewName, columnName );
-    assertTrue("Test setup error:  No row for column DRILL . `" + schemaName + "` . `"
-            + tableOrViewName + "` . `" + columnName + "`", testRow.next());
+    assertTrue( "Test setup error:  No row for column DRILL . `" + schemaName
+                + "` . `" + tableOrViewName + "` . `" + columnName + "`",
+                testRow.next() );
     return testRow;
   }
 
@@ -170,13 +190,14 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
     // (Note: Can't use JdbcTest's connect(...) because JdbcTest closes
     // Connection--and other JDBC objects--on test method failure, but this test
     // class uses some objects across methods.)
-    connection = new Driver().connect( "jdbc:drill:zk=local", JdbcAssert.getDefaultProperties());
+    connection = new Driver().connect( "jdbc:drill:zk=local",
+                                       JdbcAssert.getDefaultProperties() );
     dbMetadata = connection.getMetaData();
     final Statement stmt = connection.createStatement();
 
     ResultSet util;
 
-    /* TODO(start): Uncomment this block once we have a test plugin which supports all the needed types.
+    /* TODO(DRILL-3253)(start): Update this once we have test plugin supporting all needed types
     // Create Hive test data, only if not created already (speed optimization):
     util = stmt.executeQuery( "SELECT * FROM INFORMATION_SCHEMA.COLUMNS "
                               + "WHERE TABLE_SCHEMA = 'hive_test.default' "
@@ -201,43 +222,59 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
       fail("Expected 17 Hive test columns see " + hiveTestColumnRowCount + "."
             + "  Test code is out of date or Hive data is corrupted.");
     }
-    TODO(end) */
-
-    // Note: Assertions must be enabled (as they have been so far in tests).
+    TODO(DRILL-3253)(end) */
 
     // Create temporary test-columns view:
     util = stmt.executeQuery( "USE dfs_test.tmp" );
     assertTrue( util.next() );
-    assertTrue( "Error setting schema for test: " + util.getString( 2 ), util.getBoolean( 1 ) );
+    assertTrue( "Error setting schema for test: " + util.getString( 2 ),
+                util.getBoolean( 1 ) );
+    // TODO(DRILL-2470): re-enable TINYINT, SMALLINT, and REAL.
     util = stmt.executeQuery(
         ""
-        +   "CREATE OR REPLACE VIEW " + VIEW_NAME + " AS SELECT  "
-        + "\n  CAST( NULL         AS BOOLEAN             ) AS optBOOLEAN,      "
-        + "\n"
-        + "\n  CAST(    1         AS TINYINT             ) AS reqTINYINT,      "
-        + "\n  CAST( NULL         AS SMALLINT            ) AS optSMALLINT,     "
-        + "\n  CAST(    2         AS INTEGER             ) AS reqINTEGER,      "
-        + "\n  CAST( NULL         AS BIGINT              ) AS optBIGINT,       "
-        + "\n"
-        + "\n  CAST( NULL         AS FLOAT               ) AS optFLOAT,        "
-        + "\n  CAST(  3.3         AS DOUBLE              ) AS reqDOUBLE,       "
-        + "\n  CAST( NULL         AS REAL                ) AS optREAL,         "
-        + "\n"
-        + "\n  CAST(  4.4         AS DECIMAL(5,3)        ) AS reqDECIMAL_5_3,  "
-        + "\n"
-        + "\n  CAST( 'Hi'         AS VARCHAR(10)         ) AS reqVARCHAR_10,   "
-        + "\n  CAST( NULL         AS VARCHAR             ) AS optVARCHAR,      "
-        + "\n  CAST( '55'         AS CHAR(5)             ) AS reqCHAR_5,       "
-        + "\n  CAST( NULL         AS VARBINARY(16)       ) AS optVARBINARY_16, "
-        + "\n  CAST( NULL         AS VARBINARY(1048576)  ) AS optBINARY_1048576, "
-        + "\n  CAST( NULL         AS BINARY(8)           ) AS optBINARY_8,     "
-        + "\n"
-        + "\n  CAST( '2015-01-01' AS DATE                ) AS reqDATE,         "
-        + "\n  CAST( NULL         AS TIME                ) AS optTIME,         "
-        + "\n  CAST( NULL         AS TIME(7)             ) AS optTIME_7,       "
-        + "\n  CAST( NULL         AS TIMESTAMP           ) AS optTIMESTAMP,    "
-        + "\n  CAST( NULL  AS INTERVAL HOUR TO SECOND(3) ) AS optINTERVAL_H_S3, "
-        + "\n  CAST( NULL  AS INTERVAL YEAR(4)           ) AS optINTERVAL_Y4,  "
+        +   "CREATE OR REPLACE VIEW " + VIEW_NAME + " AS SELECT "
+        + "\n  CAST( NULL    AS BOOLEAN            ) AS mdrOptBOOLEAN,        "
+        + "\n  "
+        + "\n  CAST(    1    AS INT            ) AS mdrReqTINYINT,        "
+        + "\n  CAST( NULL    AS INT           ) AS mdrOptSMALLINT,       "
+        //+ "\n  CAST(    1    AS TINYINT            ) AS mdrReqTINYINT,        "
+        //+ "\n  CAST( NULL    AS SMALLINT           ) AS mdrOptSMALLINT,       "
+        + "\n  CAST(    2    AS INTEGER            ) AS mdrReqINTEGER,        "
+        + "\n  CAST( NULL    AS BIGINT             ) AS mdrOptBIGINT,         "
+        + "\n  "
+        + "\n  CAST( NULL    AS FLOAT               ) AS mdrOptREAL,           "
+        //+ "\n  CAST( NULL    AS REAL               ) AS mdrOptREAL,           "
+        + "\n  CAST( NULL    AS FLOAT              ) AS mdrOptFLOAT,          "
+        + "\n  CAST(  3.3    AS DOUBLE             ) AS mdrReqDOUBLE,         "
+        + "\n  "
+        + "\n  CAST(  4.4    AS DECIMAL(5,3)       ) AS mdrReqDECIMAL_5_3,    "
+        + "\n  "
+        + "\n  CAST( 'Hi'    AS VARCHAR(10)        ) AS mdrReqVARCHAR_10,     "
+        + "\n  CAST( NULL    AS VARCHAR            ) AS mdrOptVARCHAR,        "
+        + "\n  CAST( '55'    AS CHAR(5)            ) AS mdrReqCHAR_5,         "
+        + "\n  CAST( NULL    AS VARBINARY(16)      ) AS mdrOptVARBINARY_16,   "
+        + "\n  CAST( NULL    AS VARBINARY(1048576) ) AS mdrOptBINARY_1048576, "
+        + "\n  CAST( NULL    AS BINARY(8)          ) AS mdrOptBINARY_8,       "
+        + "\n  "
+        + "\n                   DATE '2015-01-01'    AS mdrReqDATE,           "
+        + "\n                   TIME '23:59:59'      AS mdrReqTIME,           "
+        + "\n  CAST( NULL    AS TIME(7)            ) AS mdrOptTIME_7,         "
+        + "\n  CAST( NULL    AS TIMESTAMP          ) AS mdrOptTIMESTAMP,      "
+        + "\n  INTERVAL '1'     YEAR                 AS mdrReqINTERVAL_Y,     "
+        + "\n  INTERVAL '1-2'   YEAR(3) TO MONTH     AS mdrReqINTERVAL_3Y_Mo, "
+        + "\n  INTERVAL '2'     MONTH                AS mdrReqINTERVAL_Mo,    "
+        + "\n  INTERVAL '3'     DAY                  AS mdrReqINTERVAL_D,     "
+        + "\n  INTERVAL '3 4'   DAY(4) TO HOUR       AS mdrReqINTERVAL_4D_H,  "
+        + "\n  INTERVAL '3 4:5' DAY(3) TO MINUTE     AS mdrReqINTERVAL_3D_Mi, "
+        + "\n  INTERVAL '3 4:5:6' DAY(2) TO SECOND(5) AS mdrReqINTERVAL_2D_S5, "
+        + "\n  INTERVAL '4'     HOUR                 AS mdrReqINTERVAL_H,     "
+        + "\n  INTERVAL '4:5'   HOUR(1) TO MINUTE    AS mdrReqINTERVAL_1H_Mi, "
+        + "\n  INTERVAL '4:5:6' HOUR(3) TO SECOND(1) AS mdrReqINTERVAL_3H_S1, "
+        + "\n  INTERVAL '5'     MINUTE               AS mdrReqINTERVAL_Mi,    "
+        + "\n  INTERVAL '5:6'   MINUTE(5) TO SECOND  AS mdrReqINTERVAL_5Mi_S, "
+        + "\n  INTERVAL '6'     SECOND               AS mdrReqINTERVAL_S,     "
+        + "\n  INTERVAL '6'     SECOND(3)            AS mdrReqINTERVAL_3S,    "
+        + "\n  INTERVAL '6'     SECOND(3, 1)         AS mdrReqINTERVAL_3S1,   "
         + "\n  '' "
         + "\nFROM INFORMATION_SCHEMA.COLUMNS "
         + "\nLIMIT 1 " );
@@ -247,38 +284,54 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
     // Set up result rows for temporary test view and Hivetest columns:
 
-    mdrOptBOOLEAN        = setUpRow( "dfs_test.tmp", VIEW_NAME, "optBOOLEAN" );
+    mdrOptBOOLEAN        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptBOOLEAN" );
 
-    mdrReqTINYINT        = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqTINYINT" );
-    mdrOptSMALLINT       = setUpRow( "dfs_test.tmp", VIEW_NAME, "optSMALLINT" );
-    mdrReqINTEGER        = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqINTEGER" );
-    mdrOptBIGINT         = setUpRow( "dfs_test.tmp", VIEW_NAME, "optBIGINT" );
+    // TODO(DRILL-2470): re-enable TINYINT, SMALLINT, and REAL.
+    //mdrReqTINYINT        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqTINYINT" );
+    //mdrOptSMALLINT       = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptSMALLINT" );
+    mdrReqINTEGER        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTEGER" );
+    mdrOptBIGINT         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptBIGINT" );
 
-    mdrOptFLOAT          = setUpRow( "dfs_test.tmp", VIEW_NAME, "optFLOAT" );
-    mdrReqDOUBLE         = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqDOUBLE" );
-    mdrOptREAL           = setUpRow( "dfs_test.tmp", VIEW_NAME, "optREAL" );
+    // TODO(DRILL-2470): re-enable TINYINT, SMALLINT, and REAL.
+    //mdrOptREAL           = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptREAL" );
+    mdrOptFLOAT          = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptFLOAT" );
+    mdrReqDOUBLE         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqDOUBLE" );
 
-    mdrReqDECIMAL_5_3    = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqDECIMAL_5_3" );
+    mdrReqDECIMAL_5_3    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqDECIMAL_5_3" );
 
-    mdrReqVARCHAR_10     = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqVARCHAR_10" );
-    mdrOptVARCHAR        = setUpRow( "dfs_test.tmp", VIEW_NAME, "optVARCHAR" );
-    mdrReqCHAR_5         = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqCHAR_5" );
-    mdrOptVARBINARY_16   = setUpRow( "dfs_test.tmp", VIEW_NAME, "optVARBINARY_16" );
-    mdrOptBINARY_1048576 = setUpRow( "dfs_test.tmp", VIEW_NAME, "optBINARY_1048576" );
+    mdrReqVARCHAR_10     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqVARCHAR_10" );
+    mdrOptVARCHAR        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptVARCHAR" );
+    mdrReqCHAR_5         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqCHAR_5" );
+    mdrOptVARBINARY_16   = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptVARBINARY_16" );
+    mdrOptBINARY_1048576 = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptBINARY_1048576" );
 
-    mdrReqDATE           = setUpRow( "dfs_test.tmp", VIEW_NAME, "reqDATE" );
-    mdrOptTIME           = setUpRow( "dfs_test.tmp", VIEW_NAME, "optTIME" );
-    mdrOptTIME_7         = setUpRow( "dfs_test.tmp", VIEW_NAME, "optTIME_7" );
-    mdrOptTIMESTAMP      = setUpRow( "dfs_test.tmp", VIEW_NAME, "optTIMESTAMP" );
-    mdrOptINTERVAL_H_S3  = setUpRow( "dfs_test.tmp", VIEW_NAME, "optINTERVAL_H_S3" );
-    mdrOptINTERVAL_Y4    = setUpRow( "dfs_test.tmp", VIEW_NAME, "optINTERVAL_Y4" );
+    mdrReqDATE           = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqDATE" );
+    mdrReqTIME           = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqTIME" );
+    mdrOptTIME_7         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptTIME_7" );
+    mdrOptTIMESTAMP      = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptTIMESTAMP" );
 
-    /* TODO(start): Uncomment this block once we have a test plugin which supports all the needed types.
+    mdrReqINTERVAL_Y     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Y" );
+    mdrReqINTERVAL_3Y_Mo = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3Y_Mo" );
+    mdrReqINTERVAL_Mo    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Mo" );
+    mdrReqINTERVAL_D     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_D" );
+    mdrReqINTERVAL_4D_H  = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_4D_H" );
+    mdrReqINTERVAL_3D_Mi = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3D_Mi" );
+    mdrReqINTERVAL_2D_S5 = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_2D_S5" );
+    mdrReqINTERVAL_H     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_H" );
+    mdrReqINTERVAL_1H_Mi = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_1H_Mi" );
+    mdrReqINTERVAL_3H_S1 = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3H_S1" );
+    mdrReqINTERVAL_Mi    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Mi" );
+    mdrReqINTERVAL_5Mi_S = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_5Mi_S" );
+    mdrReqINTERVAL_S     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_S" );
+    mdrReqINTERVAL_3S    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3S" );
+    mdrReqINTERVAL_3S1   = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3S1" );
+
+    /* TODO(DRILL-3253)(start): Update this once we have test plugin supporting all needed types.
     mdrReqARRAY   = setUpRow( "hive_test.default", "infoschematest", "listtype" );
     mdrReqMAP     = setUpRow( "hive_test.default", "infoschematest", "maptype" );
-    testRowSTRUCT = setUpRow( "hive_test.default", "infoschematest", "structtype" );
-    testRowUnion  = setUpRow( "hive_test.default", "infoschematest", "uniontypetype" );
-    TODO(end) */
+    mdrUnkSTRUCT = setUpRow( "hive_test.default", "infoschematest", "structtype" );
+    mdrUnkUnion  = setUpRow( "hive_test.default", "infoschematest", "uniontypetype" );
+    TODO(DRILL-3253)(end) */
 
     // Set up getColumns(...)) result set' metadata:
 
@@ -296,10 +349,15 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
     final ResultSet util =
         connection.createStatement().executeQuery( "DROP VIEW " + VIEW_NAME + "" );
     assertTrue( util.next() );
-    // DRILL-2439:  assertTrue( ..., util.getBoolean( 1 ) );
-    assertTrue("Error dropping temporary test-columns view " + VIEW_NAME + ": "
-         + util.getString( 2 ), util.getBoolean( 1 ) );
+    assertTrue( "Error dropping temporary test-columns view " + VIEW_NAME + ": "
+                + util.getString( 2 ), util.getBoolean( 1 ) );
     connection.close();
+  }
+
+
+  private Integer getIntOrNull( ResultSet row, String columnName ) throws SQLException {
+    final int value = row.getInt( columnName );
+    return row.wasNull() ? null : new Integer( value );
   }
 
 
@@ -328,7 +386,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_TABLE_CAT_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_TABLE_CAT_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     assertThat( mdrOptBOOLEAN.getString( "TABLE_CAT" ), equalTo( "DRILL" ) );
   }
 
@@ -353,14 +411,15 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_TABLE_CAT_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 1 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 1 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
   public void test_TABLE_CAT_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                rowsMetadata.isNullable( 1 ), equalTo( columnNullable ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                rowsMetadata.isNullable( 1 ), equalTo( columnNoNulls ) );
   }
 
 
@@ -376,16 +435,17 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_TABLE_SCHEM_hasRightValue_optBOOLEAN() throws SQLException {
-    assertThat( mdrOptBOOLEAN.getString( "TABLE_SCHEM" ), equalTo( "dfs_test.tmp" ) );
+  public void test_TABLE_SCHEM_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( mdrOptBOOLEAN.getString( "TABLE_SCHEM" ), equalTo( VIEW_SCHEMA ) );
   }
 
   // Not bothering with other _local_view_ test columns for TABLE_SCHEM.
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_TABLE_SCHEM_hasRightValue_tdbARRAY() throws SQLException {
-    assertThat( mdrReqARRAY.getString( "TABLE_SCHEM" ), equalTo( "hive_test.default" ) );
+    assertThat( mdrReqARRAY.getString( "TABLE_SCHEM" ),
+                equalTo( "hive_test.default" ) );
   }
 
   // Not bothering with other Hive test columns for TABLE_SCHEM.
@@ -409,15 +469,15 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_TABLE_SCHEM_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 2 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 2 ),
+                equalTo( String.class.getName() ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
   public void test_TABLE_SCHEM_hasRightNullability() throws SQLException {
     // To-do:  CHECK:  Why columnNullable, when seemingly known nullable?
-    // (Why not like TABLE_CAT, which does have columnNoNulls?)
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 2 ), equalTo( columnNoNulls ) );
   }
 
@@ -434,7 +494,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_TABLE_NAME_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_TABLE_NAME_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     assertThat( mdrOptBOOLEAN.getString( "TABLE_NAME" ), equalTo( VIEW_NAME ) );
   }
 
@@ -459,7 +519,8 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_TABLE_NAME_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 3 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 3 ),
+                equalTo( String.class.getName() ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
@@ -467,7 +528,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   public void test_TABLE_NAME_hasRightNullability() throws SQLException {
     // To-do:  CHECK:  Why columnNullable, when seemingly known nullable?
     // (Why not like TABLE_CAT, which does have columnNoNulls?)
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 3 ), equalTo( columnNoNulls ) );
   }
 
@@ -484,14 +545,14 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_COLUMN_NAME_hasRightValue_optBOOLEAN() throws SQLException {
-    assertThat( mdrOptBOOLEAN.getString( "COLUMN_NAME" ), equalTo( "optBOOLEAN" ) );
+  public void test_COLUMN_NAME_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( mdrOptBOOLEAN.getString( "COLUMN_NAME" ), equalTo( "mdrOptBOOLEAN" ) );
   }
 
   // Not bothering with other _local_view_ test columns for TABLE_SCHEM.
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_COLUMN_NAME_hasRightValue_tdbARRAY() throws SQLException {
     assertThat( mdrReqARRAY.getString( "COLUMN_NAME" ), equalTo( "listtype" ) );
   }
@@ -517,7 +578,8 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_COLUMN_NAME_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 4 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 4 ),
+                equalTo( String.class.getName() ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
@@ -525,7 +587,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   public void test_COLUMN_NAME_hasRightNullability() throws SQLException {
     // To-do:  CHECK:  Why columnNullable, when seemingly known nullable?
     // (Why not like TABLE_CAT, which does have columnNoNulls?)
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 4 ), equalTo( columnNoNulls ) );
   }
 
@@ -542,141 +604,138 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optBOOLEAN() throws SQLException {
-    assertThat( mdrOptBOOLEAN.getInt( "DATA_TYPE" ), equalTo( Types.BOOLEAN ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "DATA_TYPE" ), equalTo( Types.BOOLEAN ) );
+  }
+
+  @Ignore( "until tinyint is implemented. (DRILL-2470)" )
+  @Test
+  public void test_DATA_TYPE_hasRightValue_mdrReqTINYINT() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTINYINT, "DATA_TYPE" ), equalTo( Types.TINYINT ) );
+  }
+
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_DATA_TYPE_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptSMALLINT, "DATA_TYPE" ), equalTo( Types.SMALLINT ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqTINYINT() throws SQLException {
-    assertThat( mdrReqTINYINT.getInt( "DATA_TYPE" ), equalTo( Types.TINYINT ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqINTEGER() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTEGER, "DATA_TYPE" ), equalTo( Types.INTEGER ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optSMALLINT() throws SQLException {
-    assertThat( mdrOptSMALLINT.getInt( "DATA_TYPE" ), equalTo( Types.SMALLINT ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptBIGINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBIGINT, "DATA_TYPE" ), equalTo( Types.BIGINT ) );
+  }
+
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
+  @Test
+  public void test_DATA_TYPE_hasRightValue_mdrOptREAL() throws SQLException {
+    assertThat( getIntOrNull( mdrOptREAL, "DATA_TYPE" ), equalTo( Types.REAL ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqINTEGER() throws SQLException {
-    assertThat( mdrReqINTEGER.getInt( "DATA_TYPE" ), equalTo( Types.INTEGER ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptFLOAT, "DATA_TYPE" ), equalTo( Types.FLOAT ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optBIGINT() throws SQLException {
-    assertThat( mdrOptBIGINT.getInt( "DATA_TYPE" ), equalTo( Types.BIGINT ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDOUBLE, "DATA_TYPE" ), equalTo( Types.DOUBLE ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getInt( "DATA_TYPE" ), equalTo( Types.FLOAT ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDECIMAL_5_3, "DATA_TYPE" ), equalTo( Types.DECIMAL ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getInt( "DATA_TYPE" ), equalTo( Types.DOUBLE ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
+    assertThat( getIntOrNull( mdrReqVARCHAR_10, "DATA_TYPE" ), equalTo( Types.VARCHAR ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optREAL() throws SQLException {
-    assertThat( mdrOptREAL.getInt( "DATA_TYPE" ), equalTo( Types.REAL ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARCHAR, "DATA_TYPE" ), equalTo( Types.VARCHAR ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqDECIMAL_5_3() throws SQLException {
-    assertThat( mdrReqDECIMAL_5_3.getInt( "DATA_TYPE" ), equalTo( Types.DECIMAL ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqCHAR_5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqCHAR_5, "DATA_TYPE" ), equalTo( Types.CHAR ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqVARCHAR_10() throws SQLException {
-    assertThat( mdrReqVARCHAR_10.getInt( "DATA_TYPE" ), equalTo( Types.VARCHAR ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARBINARY_16, "DATA_TYPE" ), equalTo( Types.VARBINARY ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optVARCHAR() throws SQLException {
-    assertThat( mdrOptVARCHAR.getInt( "DATA_TYPE" ), equalTo( Types.VARCHAR ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBINARY_1048576, "DATA_TYPE" ), equalTo( Types.VARBINARY ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqCHAR_5() throws SQLException {
-    assertThat( mdrReqCHAR_5.getInt( "DATA_TYPE" ), equalTo( Types.CHAR ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqDATE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDATE, "DATA_TYPE" ), equalTo( Types.DATE ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optVARBINARY_16() throws SQLException {
-    assertThat( mdrOptVARBINARY_16.getInt( "DATA_TYPE" ), equalTo( Types.VARBINARY ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTIME, "DATA_TYPE" ), equalTo( Types.TIME ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
-    assertThat( mdrOptBINARY_1048576.getInt( "DATA_TYPE" ), equalTo( Types.VARBINARY ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptTIME_7() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIME_7, "DATA_TYPE" ), equalTo( Types.TIME ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_reqDATE() throws SQLException {
-    assertThat( mdrReqDATE.getInt( "DATA_TYPE" ), equalTo( Types.DATE ) );
+  public void test_DATA_TYPE_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIMESTAMP, "DATA_TYPE" ), equalTo( Types.TIMESTAMP ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optTIME() throws SQLException {
-    assertThat( mdrOptTIME.getInt( "DATA_TYPE" ), equalTo( Types.TIME ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Y, "DATA_TYPE" ), equalTo( Types.OTHER ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optTIME_7() throws SQLException {
-    assertThat( mdrOptTIME_7.getInt( "DATA_TYPE" ), equalTo( Types.TIME ) );
+  public void test_DATA_TYPE_hasRightValue_mdrReqINTERVAL_H_S3() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "DATA_TYPE" ), equalTo( Types.OTHER ) );
   }
 
   @Test
-  public void test_DATA_TYPE_hasRightValue_optTIMESTAMP() throws SQLException {
-    assertThat( mdrOptTIMESTAMP.getInt( "DATA_TYPE" ), equalTo( Types.TIMESTAMP ) );
-  }
-
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
-  @Test
-  public void test_DATA_TYPE_hasRightValue_optINTERVAL_HM() throws SQLException {
-    assertThat( mdrOptINTERVAL_H_S3.getInt( "DATA_TYPE" ), equalTo( Types.OTHER ) );
-    // To-do:  Determine which.
-    assertThat( mdrOptINTERVAL_H_S3.getInt( "DATA_TYPE" ), equalTo( Types.JAVA_OBJECT ) );
-  }
-
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
-  @Test
-  public void test_DATA_TYPE_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    assertThat( mdrOptINTERVAL_Y4.getInt( "DATA_TYPE" ), equalTo( Types.OTHER ) );
-    // To-do:  Determine which.
-    assertThat( mdrOptINTERVAL_Y4.getInt( "DATA_TYPE" ), equalTo( Types.JAVA_OBJECT ) );
-  }
-
-  @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DATA_TYPE_hasRightValue_tdbARRAY() throws SQLException {
-    assertThat( mdrReqARRAY.getInt( "DATA_TYPE" ), equalTo( Types.ARRAY ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "DATA_TYPE" ), equalTo( Types.ARRAY ) );
   }
 
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DATA_TYPE_hasRightValue_tbdMAP() throws SQLException {
     assertThat( "java.sql.Types.* type code",
-                mdrReqMAP.getInt( "DATA_TYPE" ), equalTo( Types.OTHER ) );
+                getIntOrNull( mdrReqMAP, "DATA_TYPE" ), equalTo( Types.OTHER ) );
     // To-do:  Determine which.
     assertThat( "java.sql.Types.* type code",
-                mdrReqMAP.getInt( "DATA_TYPE" ), equalTo( Types.JAVA_OBJECT ) );
+                getIntOrNull( mdrReqMAP, "DATA_TYPE" ), equalTo( Types.JAVA_OBJECT ) );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DATA_TYPE_hasRightValue_tbdSTRUCT() throws SQLException {
-    assertThat( testRowSTRUCT.getInt( "DATA_TYPE" ), equalTo( Types.STRUCT ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "DATA_TYPE" ), equalTo( Types.STRUCT ) );
   }
 
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DATA_TYPE_hasRightValue_tbdUnion() throws SQLException {
     assertThat( "java.sql.Types.* type code",
-                testRowUnion.getInt( "DATA_TYPE" ), equalTo( Types.OTHER ) );
+                getIntOrNull( mdrUnkUnion, "DATA_TYPE" ), equalTo( Types.OTHER ) );
     // To-do:  Determine which.
     assertThat( "java.sql.Types.* type code",
-                testRowUnion.getInt( "DATA_TYPE" ), equalTo( Types.JAVA_OBJECT ) );
+                getIntOrNull( mdrUnkUnion, "DATA_TYPE" ), equalTo( Types.JAVA_OBJECT ) );
   }
 
   @Test
@@ -698,13 +757,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_DATA_TYPE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 5 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 5 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_DATA_TYPE_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 5 ), equalTo( columnNoNulls ) );
   }
 
@@ -722,136 +781,132 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     assertThat( mdrOptBOOLEAN.getString( "TYPE_NAME" ), equalTo( "BOOLEAN" ) );
   }
 
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_TYPE_NAME_hasRightValue_reqTINYINT() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrReqTINYINT() throws SQLException {
     assertThat( mdrReqTINYINT.getString( "TYPE_NAME" ), equalTo( "TINYINT" ) );
   }
 
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_TYPE_NAME_hasRightValue_optSMALLINT() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptSMALLINT() throws SQLException {
     assertThat( mdrOptSMALLINT.getString( "TYPE_NAME" ), equalTo( "SMALLINT" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_reqINTEGER() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrReqINTEGER() throws SQLException {
     assertThat( mdrReqINTEGER.getString( "TYPE_NAME" ), equalTo( "INTEGER" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optBIGINT() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptBIGINT() throws SQLException {
     assertThat( mdrOptBIGINT.getString( "TYPE_NAME" ), equalTo( "BIGINT" ) );
   }
 
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
   @Test
-  public void test_TYPE_NAME_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getString( "TYPE_NAME" ), equalTo( "FLOAT" ) );
-  }
-
-  @Test
-  public void test_TYPE_NAME_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getString( "TYPE_NAME" ), equalTo( "DOUBLE" ) );
-  }
-
-  @Test
-  public void test_TYPE_NAME_hasRightValue_optREAL() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptREAL() throws SQLException {
     assertThat( mdrOptREAL.getString( "TYPE_NAME" ), equalTo( "REAL" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_reqDECIMAL_5_3() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( mdrOptFLOAT.getString( "TYPE_NAME" ), equalTo( "FLOAT" ) );
+  }
+
+  @Test
+  public void test_TYPE_NAME_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( mdrReqDOUBLE.getString( "TYPE_NAME" ), equalTo( "DOUBLE" ) );
+  }
+
+  @Test
+  public void test_TYPE_NAME_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
     assertThat( mdrReqDECIMAL_5_3.getString( "TYPE_NAME" ), equalTo( "DECIMAL" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_reqVARCHAR_10() throws SQLException {
-    assertThat( mdrReqVARCHAR_10.getString( "TYPE_NAME" ), equalTo( "VARCHAR" ) );
+  public void test_TYPE_NAME_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
+    assertThat( mdrReqVARCHAR_10.getString( "TYPE_NAME" ), equalTo( "CHARACTER VARYING" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optVARCHAR() throws SQLException {
-    assertThat( mdrOptVARCHAR.getString( "TYPE_NAME" ), equalTo( "VARCHAR" ) );
+  public void test_TYPE_NAME_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( mdrOptVARCHAR.getString( "TYPE_NAME" ), equalTo( "CHARACTER VARYING" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_reqCHAR_5() throws SQLException {
-    assertThat( mdrReqCHAR_5.getString( "TYPE_NAME" ), equalTo( "CHAR" ) );
+  public void test_TYPE_NAME_hasRightValue_mdrReqCHAR_5() throws SQLException {
+    assertThat( mdrReqCHAR_5.getString( "TYPE_NAME" ), equalTo( "CHARACTER" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optVARBINARY_16() throws SQLException {
-    assertThat( mdrOptVARBINARY_16.getString( "TYPE_NAME" ), equalTo( "VARBINARY" ) );
+  public void test_TYPE_NAME_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( mdrOptVARBINARY_16.getString( "TYPE_NAME" ), equalTo( "BINARY VARYING" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
-    assertThat( mdrOptBINARY_1048576.getString( "TYPE_NAME" ), equalTo( "VARBINARY" ) );
+  public void test_TYPE_NAME_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
+    assertThat( mdrOptBINARY_1048576.getString( "TYPE_NAME" ), equalTo( "BINARY VARYING" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_reqDATE() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrReqDATE() throws SQLException {
     assertThat( mdrReqDATE.getString( "TYPE_NAME" ), equalTo( "DATE" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optTIME() throws SQLException {
-    assertThat( mdrOptTIME.getString( "TYPE_NAME" ), equalTo( "TIME" ) );
+  public void test_TYPE_NAME_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( mdrReqTIME.getString( "TYPE_NAME" ), equalTo( "TIME" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optTIME_7() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptTIME_7() throws SQLException {
     assertThat( mdrOptTIME_7.getString( "TYPE_NAME" ), equalTo( "TIME" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optTIMESTAMP() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
     assertThat( mdrOptTIMESTAMP.getString( "TYPE_NAME" ), equalTo( "TIMESTAMP" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optINTERVAL_HM() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
     // (What SQL standard specifies for DATA_TYPE in INFORMATION_SCHEMA.COLUMNS:)
-    assertThat( mdrOptINTERVAL_H_S3.getString( "TYPE_NAME" ), equalTo( "INTERVAL" ) );
+    assertThat( mdrReqINTERVAL_Y.getString( "TYPE_NAME" ), equalTo( "INTERVAL" ) );
   }
 
   @Test
-  public void test_TYPE_NAME_hasRightValue_optINTERVAL_Y3() throws SQLException {
+  public void test_TYPE_NAME_hasRightValue_mdrReqINTERVAL_H_S3() throws SQLException {
     // (What SQL standard specifies for DATA_TYPE in INFORMATION_SCHEMA.COLUMNS:)
-    assertThat( mdrOptINTERVAL_Y4.getString( "TYPE_NAME" ), equalTo( "INTERVAL" ) );
+    assertThat( mdrReqINTERVAL_3H_S1.getString( "TYPE_NAME" ), equalTo( "INTERVAL" ) );
   }
 
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_TYPE_NAME_hasRightValue_tdbARRAY() throws SQLException {
-    assertThat( mdrReqARRAY.getString( "TYPE_NAME" ), equalTo( "VARCHAR(65535) ARRAY" ) );
-    // TODO:  Determine which.
     assertThat( mdrReqARRAY.getString( "TYPE_NAME" ), equalTo( "ARRAY" ) );
   }
 
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_TYPE_NAME_hasRightValue_tbdMAP() throws SQLException {
-    assertThat( mdrReqMAP.getString( "TYPE_NAME" ), equalTo( "(VARCHAR(65535), INTEGER) MAP" ) );
-    // TODO:  Determine which.
     assertThat( mdrReqMAP.getString( "TYPE_NAME" ), equalTo( "MAP" ) );
   }
 
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_TYPE_NAME_hasRightValue_tbdSTRUCT() throws SQLException {
-    assertThat( testRowSTRUCT.getString( "TYPE_NAME" ),
-                equalTo( "STRUCT(INTEGER sint, BOOLEAN sboolean, VARCHAR(65535) sstring)" ) ); // TODO:  Confirm.
-    // TODO:  Determine which.
-    assertThat( testRowSTRUCT.getString( "TYPE_NAME" ), equalTo( "STRUCT" ) );
+    assertThat( mdrUnkSTRUCT.getString( "TYPE_NAME" ), equalTo( "STRUCT" ) );
   }
 
-  @Ignore( "until resolved:  expected value (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_TYPE_NAME_hasRightValue_tbdUnion() throws SQLException {
-    assertThat( testRowUnion.getString( "TYPE_NAME" ), equalTo( "OTHER" ) );
+    assertThat( mdrUnkUnion.getString( "TYPE_NAME" ), equalTo( "OTHER" ) );
     fail( "Expected value is not resolved yet." );
   }
 
@@ -874,14 +929,15 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_TYPE_NAME_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 6 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 6 ),
+                equalTo( String.class.getName() ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
   public void test_TYPE_NAME_hasRightNullability() throws SQLException {
     // To-do:  CHECK:  Why columnNullable, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 6 ), equalTo( columnNoNulls ) );
   }
 
@@ -908,164 +964,252 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optBOOLEAN() throws SQLException {
-    final int value = mdrOptBOOLEAN.getInt( "COLUMN_SIZE" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBOOLEAN.wasNull(), equalTo( true )  ); // TODO:  CONFIRM.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "COLUMN_SIZE" ), nullValue() );
+  }
+
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqTINYINT() throws SQLException {
+    // 8 bits
+    assertThat( getIntOrNull( mdrReqTINYINT, "COLUMN_SIZE" ), equalTo( 8 ) );
+  }
+
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    // 16 bits
+    assertThat( getIntOrNull( mdrOptSMALLINT, "COLUMN_SIZE" ), equalTo( 16 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqTINYINT() throws SQLException {
-    assertThat( mdrReqTINYINT.getInt( "COLUMN_SIZE" ), equalTo( 3 ) ); // TODO:  CONFIRM.
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTEGER() throws SQLException {
+    // 32 bits
+    assertThat( getIntOrNull( mdrReqINTEGER, "COLUMN_SIZE" ), equalTo( 32 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optSMALLINT() throws SQLException {
-    assertThat( mdrOptSMALLINT.getInt( "COLUMN_SIZE" ), equalTo( 5 ) );  // TODO:  CONFIRM
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptBIGINT() throws SQLException {
+    // 64 bits
+    assertThat( getIntOrNull( mdrOptBIGINT, "COLUMN_SIZE" ), equalTo( 64 ) );
+  }
+
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptREAL() throws SQLException {
+    // 24 bits of precision
+    assertThat( getIntOrNull( mdrOptREAL, "COLUMN_SIZE" ), equalTo( 24 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqINTEGER() throws SQLException {
-    assertThat( mdrReqINTEGER.getInt( "COLUMN_SIZE" ), equalTo( 10 ) ); // TODO:  CONFIRM.
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptFLOAT() throws SQLException {
+    // 24 bits of precision (same as REAL--current Drill behavior)
+    assertThat( getIntOrNull( mdrOptFLOAT, "COLUMN_SIZE" ), equalTo( 24 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optBIGINT() throws SQLException {
-    assertThat( mdrOptBIGINT.getInt( "COLUMN_SIZE" ), equalTo( 19 ) );  // To-do:  CONFIRM.
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    // 53 bits of precision
+    assertThat( getIntOrNull( mdrReqDOUBLE, "COLUMN_SIZE" ), equalTo( 53 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getInt( "COLUMN_SIZE" ), equalTo( 7 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDECIMAL_5_3, "COLUMN_SIZE" ), equalTo( 5 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getInt( "COLUMN_SIZE" ), equalTo( 15 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
+    assertThat( getIntOrNull( mdrReqVARCHAR_10, "COLUMN_SIZE" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optREAL() throws SQLException {
-    assertThat( mdrOptREAL.getInt( "COLUMN_SIZE" ), equalTo( 15 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARCHAR, "COLUMN_SIZE" ), equalTo( 1 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqDECIMAL_5_3() throws SQLException {
-    assertThat( mdrReqDECIMAL_5_3.getInt( "COLUMN_SIZE" ), equalTo( 5 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqCHAR_5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqCHAR_5, "COLUMN_SIZE" ), equalTo( 5 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqVARCHAR_10() throws SQLException {
-    assertThat( mdrReqVARCHAR_10.getInt( "COLUMN_SIZE" ), equalTo( 10 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARBINARY_16, "COLUMN_SIZE" ), equalTo( 16 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optVARCHAR() throws SQLException {
-    assertThat( mdrOptVARCHAR.getInt( "COLUMN_SIZE" ), equalTo( 1 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptBINARY_1048576() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBINARY_1048576, "COLUMN_SIZE" ), equalTo( 1048576 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqCHAR_5() throws SQLException {
-    assertThat( mdrReqCHAR_5.getInt( "COLUMN_SIZE" ), equalTo( 5 ) );
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqDATE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDATE, "COLUMN_SIZE" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optVARBINARY_16() throws SQLException {
-    assertThat( mdrOptVARBINARY_16.getInt( "COLUMN_SIZE" ), equalTo( 16 ) );
-  }
-
-  @Test
-  public void test_COLUMN_SIZE_hasRightValue_optBINARY_1048576() throws SQLException {
-    assertThat( mdrOptBINARY_1048576.getInt( "COLUMN_SIZE" ), equalTo( 1048576 ) );
-  }
-
-  @Test
-  public void test_COLUMN_SIZE_hasRightValue_reqDATE() throws SQLException {
-    assertThat( mdrReqDATE.getInt( "COLUMN_SIZE" ), equalTo( 10 ) );
-  }
-
-  @Test
-  public void test_COLUMN_SIZE_hasRightValue_optTIME() throws SQLException {
-    assertThat( mdrOptTIME.getInt( "COLUMN_SIZE" ),
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTIME, "COLUMN_SIZE" ),
                 equalTo( 8  /* HH:MM:SS */  ) );
   }
 
-  @Ignore( "until resolved:  whether to implement TIME precision or drop test" )
+  @Ignore( "until datetime precision is implemented" )
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optTIME_7() throws SQLException {
-    assertThat( mdrOptTIME_7.getInt( "COLUMN_SIZE" ),
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptTIME_7() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIME_7, "COLUMN_SIZE" ),
                 equalTo( 8  /* HH:MM:SS */ + 1 /* '.' */ + 7 /* sssssss */ ) );
   }
 
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optTIMESTAMP() throws SQLException {
-    assertThat( mdrOptTIMESTAMP.getInt( "COLUMN_SIZE" ),
+  public void test_COLUMN_SIZE_hasINTERIMValue_mdrOptTIME_7() throws SQLException {
+    assertThat( "When datetime precision is implemented, un-ignore above method and purge this.",
+                getIntOrNull( mdrOptTIME_7, "COLUMN_SIZE" ),
+                equalTo( 8  /* HH:MM:SS */ ) );
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIMESTAMP, "COLUMN_SIZE" ),
                 equalTo( 19 /* YYYY-MM-DDTHH:MM:SS */  ) );
   }
 
-  @Ignore( "until fixed:  INTERVAL metadata in INFORMATION_SCHEMA (DRILL-2531)" )
   @Test
-  public void test_COLUMN_SIZE_hasRightValue_optINTERVAL_HM() throws SQLException {
-    assertThat( mdrOptINTERVAL_H_S3.getInt( "COLUMN_SIZE" ),
-                equalTo( 14 ) );  // "P12H12M12.1234S"
-  }
-
-  // TODO:  When DRILL-2531 is fixed, remove this:
-  @Test
-  public void test_COLUMN_SIZE_hasRightINTERIMValue_optINTERVAL_HM() throws SQLException {
-    assertThat( mdrOptINTERVAL_H_S3.getInt( "COLUMN_SIZE" ),
-                equalTo( 31 ) );  // from max. form "P12..90D12H12M12.12..89S"
-  }
-
-  @Ignore( "until fixed:  INTERVAL metadata in INFORMATION_SCHEMA (DRILL-2531)" )
-  @Test
-  public void test_COLUMN_SIZE_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    assertThat( mdrOptINTERVAL_Y4.getInt( "COLUMN_SIZE" ),
-                equalTo( 6 ) );  // "P1234Y"
-  }
-
-  // TODO:  When DRILL-2531 is fixed, remove this:
-  @Test
-  public void test_COLUMN_SIZE_hasRightINTERIMValue_optINTERVAL_Y3() throws SQLException {
-    assertThat( mdrOptINTERVAL_Y4.getInt( "COLUMN_SIZE" ),
-                equalTo( 15 ) );  // from max. form "P12..90Y"
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Y, "COLUMN_SIZE" ),
+                equalTo( 4 ) );  // "P12Y"
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3Y_Mo() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3Y_Mo, "COLUMN_SIZE" ),
+                equalTo( 8 ) );  // "P123Y12M"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_Mo() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Mo, "COLUMN_SIZE" ),
+                equalTo( 4 ) );  // "P12M"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_D() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_D, "COLUMN_SIZE" ),
+                equalTo( 4 ) );  // "P12D"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_4D_H() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_4D_H, "COLUMN_SIZE" ),
+                equalTo( 10 ) );  // "P1234DT12H"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3D_Mi() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3D_Mi, "COLUMN_SIZE" ),
+                equalTo( 12 ) );  // "P123DT12H12M"
+  }
+
+
+  @Ignore( "until fixed:  fractional secs. prec. gets start unit prec. (DRILL-3244) " )
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_2D_S5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_2D_S5, "COLUMN_SIZE" ),
+                equalTo( 20 ) );  // "P12DT12H12M12.12345S"
+  }
+
+  public void test_COLUMN_SIZE_hasINTERIMValue_mdrReqINTERVAL_2D_S5() throws SQLException {
+    assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_2D_S5, "COLUMN_SIZE" ),
+                equalTo( 17 ) );  // "P12DT12H12M12.12S"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3H() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_H, "COLUMN_SIZE" ),
+                equalTo( 5 ) );  // "PT12H"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_4H_Mi() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_1H_Mi, "COLUMN_SIZE" ),
+                equalTo( 7 ) );  // "PT1H12M"
+  }
+
+  @Ignore( "until fixed:  fractional secs. prec. gets wrong value (DRILL-3244)" )
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "COLUMN_SIZE" ),
+                equalTo( 14 ) );  // "PT123H12M12.1S"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasINTERIMValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_3H_S1, "COLUMN_SIZE" ),
+                equalTo( 16 ) );  // "PT123H12M12.123S"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_Mi() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Mi, "COLUMN_SIZE" ),
+                equalTo( 5 ) );  // "PT12M"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_5Mi_S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_5Mi_S, "COLUMN_SIZE" ),
+                equalTo( 18 ) );  // "PT12345M12.123456S"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_S, "COLUMN_SIZE" ),
+                equalTo( 12 ) );  // "PT12.123456S"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3S, "COLUMN_SIZE" ),
+                equalTo( 13 ) );  // "PT123.123456S"
+  }
+
+  @Ignore( "until fixed:  fractional secs. prec. gets wrong value (DRILL-3244)" )
+  @Test
+  public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3S1() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3S1, "COLUMN_SIZE" ),
+                equalTo( 8 ) );  // "PT123.1S"
+  }
+
+  @Test
+  public void test_COLUMN_SIZE_hasINTERIMValue_mdrReqINTERVAL_3S1() throws SQLException {
+    assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_3S1, "COLUMN_SIZE" ),
+                equalTo( 10 ) );  // "PT123.123S"
+  }
+
+  @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_COLUMN_SIZE_hasRightValue_tdbARRAY() throws SQLException {
-    final int value = mdrReqARRAY.getInt( "COLUMN_SIZE" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqARRAY.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "COLUMN_SIZE" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_COLUMN_SIZE_hasRightValue_tbdMAP() throws SQLException {
-    final int value = mdrReqMAP.getInt( "COLUMN_SIZE" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqMAP.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqMAP, "COLUMN_SIZE" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_COLUMN_SIZE_hasRightValue_tbdSTRUCT() throws SQLException {
-    final int value = testRowSTRUCT.getInt( "COLUMN_SIZE" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowSTRUCT.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "COLUMN_SIZE" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_COLUMN_SIZE_hasRightValue_tbdUnion() throws SQLException {
-    final int value = testRowUnion.getInt( "COLUMN_SIZE" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowUnion.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkUnion, "COLUMN_SIZE" ), nullValue() );
   }
 
   @Test
@@ -1087,13 +1231,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_COLUMN_SIZE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 7 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 7 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_COLUMN_SIZE_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 7 ), equalTo( columnNullable ) );
   }
 
@@ -1133,176 +1277,258 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optBOOLEAN() throws SQLException {
-    final int value = mdrOptBOOLEAN.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBOOLEAN.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "DECIMAL_DIGITS" ), nullValue() );
   }
 
-
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqTINYINT() throws SQLException {
-    final int value = mdrReqTINYINT.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqTINYINT.wasNull(), equalTo( false ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqTINYINT() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTINYINT, "DECIMAL_DIGITS" ), equalTo( 0 ) );
   }
 
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optSMALLINT() throws SQLException {
-    final int value = mdrOptSMALLINT.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptSMALLINT.wasNull(), equalTo( false ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptSMALLINT, "DECIMAL_DIGITS" ), equalTo( 0 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqINTEGER() throws SQLException {
-    final int value = mdrReqINTEGER.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqINTEGER.wasNull(), equalTo( false ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTEGER() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTEGER, "DECIMAL_DIGITS" ), equalTo( 0 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optBIGINT() throws SQLException {
-    final int value = mdrOptBIGINT.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBIGINT.wasNull(), equalTo( false ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptBIGINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBIGINT, "DECIMAL_DIGITS" ), equalTo( 0 ) );
+  }
+
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptREAL() throws SQLException {
+    assertThat( getIntOrNull( mdrOptREAL, "DECIMAL_DIGITS" ), equalTo( 7 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getInt( "DECIMAL_DIGITS" ), equalTo( 7 ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptFLOAT, "DECIMAL_DIGITS" ), equalTo( 7 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getInt( "DECIMAL_DIGITS" ), equalTo( 15 ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDOUBLE, "DECIMAL_DIGITS" ), equalTo( 15 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optREAL() throws SQLException {
-    assertThat( mdrOptREAL.getInt( "DECIMAL_DIGITS" ), equalTo( 15 ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDECIMAL_5_3, "DECIMAL_DIGITS" ), equalTo( 3 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqDECIMAL_5_3() throws SQLException {
-    assertThat( mdrReqDECIMAL_5_3.getInt( "DECIMAL_DIGITS" ), equalTo( 3 ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
+    assertThat( getIntOrNull( mdrReqVARCHAR_10, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqVARCHAR_10() throws SQLException {
-    final int value = mdrReqVARCHAR_10.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqVARCHAR_10.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARCHAR, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optVARCHAR() throws SQLException {
-    final int value = mdrOptVARCHAR.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptVARCHAR.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqCHAR_5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqCHAR_5, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqCHAR_5() throws SQLException {
-    final int value = mdrReqCHAR_5.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqCHAR_5.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARBINARY_16, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optVARBINARY_16() throws SQLException {
-    final int value = mdrOptVARBINARY_16.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptVARBINARY_16.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBINARY_1048576, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
-    final int value = mdrOptBINARY_1048576.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBINARY_1048576.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqDATE() throws SQLException {
+    // Zero because, per SQL spec.,  DATE doesn't (seem to) have a datetime
+    // precision, but its DATETIME_PRECISION value must not be null.
+    assertThat( getIntOrNull( mdrReqDATE, "DECIMAL_DIGITS" ), equalTo( 0 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_reqDATE() throws SQLException {
-    final int value = mdrReqDATE.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqDATE.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqTIME() throws SQLException {
+    // Zero is default datetime precision for TIME in SQL DATETIME_PRECISION.
+    assertThat( getIntOrNull( mdrReqTIME, "DECIMAL_DIGITS" ), equalTo( 0 ) );
+  }
+
+  @Ignore( "until datetime precision is implemented" )
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptTIME_7() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIME_7, "DECIMAL_DIGITS" ), equalTo( 7 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optTIME() throws SQLException {
-    assertThat( mdrOptTIME.getInt( "DECIMAL_DIGITS" ), equalTo( 0 ) );
+  public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrOptTIME_7() throws SQLException {
+    assertThat( "When datetime precision is implemented, un-ignore above method and purge this.",
+                getIntOrNull( mdrOptTIME_7, "DECIMAL_DIGITS" ), equalTo( 0 ) );
   }
 
-  @Ignore( "until resolved:  whether to implement TIME precision or drop test" )
+  @Ignore( "until datetime precision is implemented" )
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optTIME_7() throws SQLException {
-    assertThat( mdrOptTIME_7.getInt( "DECIMAL_DIGITS" ), equalTo( 7 ) );
-  }
-
-  @Ignore( "until resolved:  whether to implement TIME precision or drop test" )
-  @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optTIMESTAMP() throws SQLException {
-    assertThat( mdrOptTIMESTAMP.getInt( "DECIMAL_DIGITS" ), equalTo( 0 ) );
-  }
-
-  @Ignore( "until fixed:  INTERVAL metadata in INFORMATION_SCHEMA (DRILL-2531)" )
-  @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optINTERVAL_HM() throws SQLException {
-    assertThat( mdrOptINTERVAL_H_S3.getInt( "DECIMAL_DIGITS" ), equalTo( 3 ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
+    // 6 is default datetime precision for TIMESTAMP.
+    assertThat( getIntOrNull( mdrOptTIMESTAMP, "DECIMAL_DIGITS" ), equalTo( 6 ) );
   }
 
   @Test
-  public void test_DECIMAL_DIGITS_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    assertThat( mdrOptINTERVAL_Y4.getInt( "DECIMAL_DIGITS" ), equalTo( 0 ) );
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( "When datetime precision is implemented, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_Y, "DECIMAL_DIGITS" ), equalTo( 0 ) );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3Y_Mo() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3Y_Mo, "DECIMAL_DIGITS" ), equalTo( 0 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_Mo() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Mo, "DECIMAL_DIGITS" ), equalTo( 0 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_D() throws SQLException {
+    // 6 seems to be Drill's (Calcite's) choice (to use default value for the
+    // fractional seconds precision for when SECOND _is_ present) since the SQL
+    // spec. (ISO/IEC 9075-2:2011(E) 10.1 <interval qualifier>) doesn't seem to
+    // specify the fractional seconds precision when SECOND is _not_ present.
+    assertThat( getIntOrNull( mdrReqINTERVAL_D, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_4D_H() throws SQLException {
+    // 6 seems to be Drill's (Calcite's) choice (to use default value for the
+    // fractional seconds precision for when SECOND _is_ present) since the SQL
+    // spec. (ISO/IEC 9075-2:2011(E) 10.1 <interval qualifier>) doesn't seem to
+    // specify the fractional seconds precision when SECOND is _not_ present.
+    assertThat( getIntOrNull( mdrReqINTERVAL_4D_H, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3D_Mi() throws SQLException {
+    // 6 seems to be Drill's (Calcite's) choice (to use default value for the
+    // fractional seconds precision for when SECOND _is_ present) since the SQL
+    // spec. (ISO/IEC 9075-2:2011(E) 10.1 <interval qualifier>) doesn't seem to
+    // specify the fractional seconds precision when SECOND is _not_ present.
+    assertThat( getIntOrNull( mdrReqINTERVAL_3D_Mi, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Ignore( "until fixed:  fractional secs. prec. gets wrong value (DRILL-3244)" )
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_2D_S5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_2D_S5, "DECIMAL_DIGITS" ), equalTo( 5 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrReqINTERVAL_2D_S5() throws SQLException {
+    assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_2D_S5, "DECIMAL_DIGITS" ), equalTo( 2 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3H() throws SQLException {
+    // 6 seems to be Drill's (Calcite's) choice (to use default value for the
+    // fractional seconds precision for when SECOND _is_ present) since the SQL
+    // spec. (ISO/IEC 9075-2:2011(E) 10.1 <interval qualifier>) doesn't seem to
+    // specify the fractional seconds precision when SECOND is _not_ present.
+    assertThat( getIntOrNull( mdrReqINTERVAL_H, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_1H_Mi() throws SQLException {
+    // 6 seems to be Drill's (Calcite's) choice (to use default value for the
+    // fractional seconds precision for when SECOND _is_ present) since the SQL
+    // spec. (ISO/IEC 9075-2:2011(E) 10.1 <interval qualifier>) doesn't seem to
+    // specify the fractional seconds precision when SECOND is _not_ present.
+    assertThat( getIntOrNull( mdrReqINTERVAL_1H_Mi, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Ignore( "until fixed:  fractional secs. prec. gets wrong value (DRILL-3244)" )
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "DECIMAL_DIGITS" ), equalTo( 1 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_3H_S1, "DECIMAL_DIGITS" ), equalTo( 3 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_Mi() throws SQLException {
+    // 6 seems to be Drill's (Calcite's) choice (to use default value for the
+    // fractional seconds precision for when SECOND _is_ present) since the SQL
+    // spec. (ISO/IEC 9075-2:2011(E) 10.1 <interval qualifier>) doesn't seem to
+    // specify the fractional seconds precision when SECOND is _not_ present.
+    assertThat( getIntOrNull( mdrReqINTERVAL_Mi, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_5Mi_S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_5Mi_S, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_S, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3S, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrReqINTERVAL_3S() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3S, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Ignore( "until fixed:  fractional secs. prec. gets wrong value (DRILL-3244)" )
+  @Test
+  public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3S1() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3S, "DECIMAL_DIGITS" ), equalTo( 1 ) );
+  }
+
+  @Test
+  public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrReqINTERVAL_3S1() throws SQLException {
+    assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
+                getIntOrNull( mdrReqINTERVAL_3S, "DECIMAL_DIGITS" ), equalTo( 6 ) );
+  }
+
+  @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DECIMAL_DIGITS_hasRightValue_tdbARRAY() throws SQLException {
-    final int value = mdrReqARRAY.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqARRAY.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DECIMAL_DIGITS_hasRightValue_tbdMAP() throws SQLException {
-    final int value = mdrReqMAP.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqMAP.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqMAP, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DECIMAL_DIGITS_hasRightValue_tbdSTRUCT() throws SQLException {
-    final int value = testRowSTRUCT.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowSTRUCT.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_DECIMAL_DIGITS_hasRightValue_tbdUnion() throws SQLException {
-    final int value = testRowUnion.getInt( "DECIMAL_DIGITS" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowUnion.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkUnion, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
@@ -1324,13 +1550,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_DECIMAL_DIGITS_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 9 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 9 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_DECIMAL_DIGITS_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 9 ), equalTo( columnNullable ) );
   }
 
@@ -1351,178 +1577,130 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optBOOLEAN() throws SQLException {
-    final int value = mdrOptBOOLEAN.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBOOLEAN.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "NUM_PREC_RADIX" ), nullValue() );
+  }
+
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqTINYINT() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTINYINT, "NUM_PREC_RADIX" ), equalTo( 2 ) );
+  }
+
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptSMALLINT, "NUM_PREC_RADIX" ), equalTo( 2 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqTINYINT() throws SQLException {
-    assertThat( mdrReqTINYINT.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqINTEGER() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTEGER, "NUM_PREC_RADIX" ), equalTo( 2 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optSMALLINT() throws SQLException {
-    assertThat( mdrOptSMALLINT.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptBIGINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBIGINT, "NUM_PREC_RADIX" ), equalTo( 2 ) );
+  }
+
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
+  @Test
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptREAL() throws SQLException {
+    assertThat( getIntOrNull( mdrOptREAL, "NUM_PREC_RADIX" ), equalTo( 2 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqINTEGER() throws SQLException {
-    assertThat( mdrReqINTEGER.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptFLOAT, "NUM_PREC_RADIX" ), equalTo( 2 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optBIGINT() throws SQLException {
-    assertThat( mdrOptBIGINT.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDOUBLE, "NUM_PREC_RADIX" ), equalTo( 2 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDECIMAL_5_3, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
+    assertThat( getIntOrNull( mdrReqVARCHAR_10, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optREAL() throws SQLException {
-    assertThat( mdrOptREAL.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARCHAR, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqDECIMAL_5_3() throws SQLException {
-    assertThat( mdrReqDECIMAL_5_3.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqCHAR_5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqCHAR_5, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqVARCHAR_10() throws SQLException {
-    final int value = mdrReqVARCHAR_10.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqVARCHAR_10.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARBINARY_16, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optVARCHAR() throws SQLException {
-    final int value = mdrOptVARCHAR.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptVARCHAR.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBINARY_1048576, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqCHAR_5() throws SQLException {
-    final int value = mdrReqCHAR_5.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqCHAR_5.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqDATE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDATE, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optVARBINARY_16() throws SQLException {
-    final int value = mdrOptVARBINARY_16.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptVARBINARY_16.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTIME, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
-    final int value = mdrOptBINARY_1048576.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBINARY_1048576.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptTIME_7() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIME_7, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_reqDATE() throws SQLException {
-    final int value = mdrReqDATE.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqDATE.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
-  }
-
-  @Ignore( "until resolved:  expected value" )
-  @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optTIME() throws SQLException {
-    assertThat( mdrOptTIME.getInt( "NUM_PREC_RADIX" ), equalTo( 10 /* NULL */ ) );
-    // To-do:  Determine which.
-    final int value = mdrOptTIME.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptTIME.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
-  }
-
-  @Ignore( "until resolved:  expected value" )
-  @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optTIME_7() throws SQLException {
-    assertThat( mdrOptTIME_7.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
-    // To-do:  Determine which.
-    final int value = mdrOptTIME_7.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptTIME_7.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
-  }
-
-  @Ignore( "until resolved:  expected value" )
-  @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optTIMESTAMP() throws SQLException {
-    assertThat( mdrOptTIMESTAMP.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
-    // To-do:  Determine which.
-    final int value = mdrOptTIMESTAMP.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                 mdrOptTIMESTAMP.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIMESTAMP, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optINTERVAL_HM() throws SQLException {
-    assertThat( mdrOptINTERVAL_H_S3.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Y, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  public void test_NUM_PREC_RADIX_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    assertThat( mdrOptINTERVAL_Y4.getInt( "NUM_PREC_RADIX" ), equalTo( 10 ) );
+  public void test_NUM_PREC_RADIX_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "NUM_PREC_RADIX" ), equalTo( 10 ) );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_NUM_PREC_RADIX_hasRightValue_tdbARRAY() throws SQLException {
-    final int value = mdrReqARRAY.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqARRAY.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_NUM_PREC_RADIX_hasRightValue_tbdMAP() throws SQLException {
-    final int value = mdrReqMAP.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqMAP.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqMAP, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_NUM_PREC_RADIX_hasRightValue_tbdSTRUCT() throws SQLException {
-    final int value = testRowSTRUCT.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowSTRUCT.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_NUM_PREC_RADIX_hasRightValue_tbdUnion() throws SQLException {
-    final int value = testRowUnion.getInt( "NUM_PREC_RADIX" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowUnion.wasNull(), equalTo( true ) ); // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkUnion, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
@@ -1544,13 +1722,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_NUM_PREC_RADIX_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 10 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 10 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_NUM_PREC_RADIX_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 10 ), equalTo( columnNullable ) );
   }
 
@@ -1564,238 +1742,211 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   // - Drill:
   // - (Meta): INTEGER(?); Non-nullable(?).
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_NULLABLE_isAtRightPosition() throws SQLException {
     assertThat( rowsMetadata.getColumnLabel( 11 ), equalTo( "NULLABLE" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
-  public void test_NULLABLE_hasRightValue_optBOOLEAN() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptBOOLEAN.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptBOOLEAN, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_NULLABLE_hasRightValue_reqTINYINT() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrReqTINYINT() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqTINYINT.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqTINYINT, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_NULLABLE_hasRightValue_optSMALLINT() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known  nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptSMALLINT.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptSMALLINT, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optBIGINT() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known  nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptBIGINT.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrOptBIGINT() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptBIGINT, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
   @Test
-  public void test_NULLABLE_hasRightValue_optFLOAT() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrOptREAL() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptREAL, "NULLABLE" ), equalTo( columnNullable ) );
+  }
+
+  @Test
+  public void test_NULLABLE_hasRightValue_mdrOptFLOAT() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptFLOAT.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptFLOAT, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_reqDOUBLE() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqDOUBLE, "NULLABLE" ), equalTo( columnNoNulls ) );
+  }
+
+  @Test
+  public void test_NULLABLE_hasRightValue_mdrReqINTEGER() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqDOUBLE.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqINTEGER, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optREAL() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptREAL.getInt( "NULLABLE" ), equalTo( columnNullable ) );
-  }
-
-  // (See to-do note near top of file about reviewing nullability.)
-  @Test
-  public void test_NULLABLE_hasRightValue_reqINTEGER() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqINTEGER.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqDECIMAL_5_3, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_reqDECIMAL_5_3() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqDECIMAL_5_3.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqVARCHAR_10, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_reqVARCHAR_10() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptVARCHAR, "NULLABLE" ), equalTo( columnNullable ) );
+  }
+
+  @Test
+  public void test_NULLABLE_hasRightValue_mdrReqCHAR_5() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqVARCHAR_10.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqCHAR_5, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optVARCHAR() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptVARCHAR.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptVARBINARY_16, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_reqCHAR_5() throws SQLException {
+  public void test_NULLABLE_hasRightValue_mdrOptBINARY_1048576() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptBINARY_1048576, "NULLABLE" ), equalTo( columnNullable ) );
+  }
+
+  @Test
+  public void test_NULLABLE_hasRightValue_mdrReqDATE() throws SQLException {
     // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqCHAR_5.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqDATE, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optVARBINARY_16() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptVARBINARY_16.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqTIME, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptBINARY_1048576.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrOptTIME_7() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptTIME_7, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_reqDATE() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known non-nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrReqDATE.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+  public void test_NULLABLE_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrOptTIMESTAMP, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optTIME() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptTIME.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqINTERVAL_Y, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optTIME_7() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptTIME_7.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+  public void test_NULLABLE_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrReqINTERVAL_3H_S1, "NULLABLE" ), equalTo( columnNoNulls ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_NULLABLE_hasRightValue_optTIMESTAMP() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptTIMESTAMP.getInt( "NULLABLE" ), equalTo( columnNullable ) );
-  }
-
-  // (See to-do note near top of file about reviewing nullability.)
-  @Test
-  public void test_NULLABLE_hasRightValue_optINTERVAL_HM() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptINTERVAL_H_S3.getInt( "NULLABLE" ), equalTo( columnNullable ) );
-  }
-
-  // (See to-do note near top of file about reviewing nullability.)
-  @Test
-  public void test_NULLABLE_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    // To-do:  CHECK:  Why columnNullableUnknown, when seemingly known nullable?
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                mdrOptINTERVAL_Y4.getInt( "NULLABLE" ), equalTo( columnNullable ) );
-  }
-
-  // (See to-do note near top of file about reviewing nullability.)
-  @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_NULLABLE_hasRightValue_tdbARRAY() throws SQLException {
-    assertThat( mdrReqARRAY.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "NULLABLE" ), equalTo( columnNoNulls ) );
+    // To-do:  Determine which.
+    assertThat( getIntOrNull( mdrReqARRAY, "NULLABLE" ), equalTo( columnNullable ) );
+    // To-do:  Determine which.
+    assertThat( getIntOrNull( mdrReqARRAY, "NULLABLE" ), equalTo( columnNullableUnknown ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_NULLABLE_hasRightValue_tbdMAP() throws SQLException {
-    assertThat( mdrReqMAP.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( getIntOrNull( mdrReqMAP, "NULLABLE" ), equalTo( columnNoNulls ) );
+    // To-do:  Determine which.
+    assertThat( getIntOrNull( mdrReqMAP, "NULLABLE" ), equalTo( columnNullable ) );
+    // To-do:  Determine which.
+    assertThat( getIntOrNull( mdrReqMAP, "NULLABLE" ), equalTo( columnNullableUnknown ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
   public void test_NULLABLE_hasRightValue_tbdSTRUCT() throws SQLException {
-    assertThat( testRowSTRUCT.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "NULLABLE" ), equalTo( columnNullable ) );
     // To-do:  Determine which.
-    assertThat( testRowSTRUCT.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "NULLABLE" ), equalTo( columnNoNulls ) );
     // To-do:  Determine which.
-    assertThat( testRowSTRUCT.getInt( "NULLABLE" ), equalTo( columnNullableUnknown ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "NULLABLE" ), equalTo( columnNullableUnknown ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
   public void test_NULLABLE_hasRightValue_tbdUnion() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                testRowUnion.getInt( "NULLABLE" ), equalTo( columnNullable ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrUnkUnion, "NULLABLE" ), equalTo( columnNullable ) );
     // To-do:  Determine which.
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                testRowUnion.getInt( "NULLABLE" ), equalTo( columnNoNulls ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrUnkUnion, "NULLABLE" ), equalTo( columnNoNulls ) );
     // To-do:  Determine which.
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
-                testRowUnion.getInt( "NULLABLE" ), equalTo( columnNullableUnknown ) );
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
+                getIntOrNull( mdrUnkUnion, "NULLABLE" ), equalTo( columnNullableUnknown ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_NULLABLE_hasSameNameAndLabel() throws SQLException {
     assertThat( rowsMetadata.getColumnName( 11 ), equalTo( "NULLABLE" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_NULLABLE_hasRightTypeString() throws SQLException {
-    assertThat( rowsMetadata.getColumnTypeName( 11 ), equalTo( "INTEGER" ) );  // TODO:  Confirm.
+    assertThat( rowsMetadata.getColumnTypeName( 11 ), equalTo( "INTEGER" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_NULLABLE_hasRightTypeCode() throws SQLException {
-    assertThat( rowsMetadata.getColumnType( 11 ), equalTo( Types.INTEGER ) );  // TODO:  Confirm.
+    assertThat( rowsMetadata.getColumnType( 11 ), equalTo( Types.INTEGER ) );
   }
 
   @Ignore( "until fixed (\"none\" -> right class name) (DRILL-2137)" )
   @Test
   public void test_NULLABLE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 11 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 11 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_NULLABLE_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 11 ), equalTo( columnNoNulls ) );
   }
 
@@ -1812,7 +1963,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_REMARKS_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_REMARKS_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     assertThat( mdrOptBOOLEAN.getString( "REMARKS" ), nullValue() );
   }
 
@@ -1835,13 +1986,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_REMARKS_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 12 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 12 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_REMARKS_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 12 ), equalTo( columnNullable ) );
   }
 
@@ -1860,7 +2011,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_COLUMN_DEF_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_COLUMN_DEF_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     assertThat( mdrOptBOOLEAN.getString( "COLUMN_DEF" ), nullValue() );
   }
 
@@ -1883,13 +2034,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_COLUMN_DEF_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 13 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 13 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_COLUMN_DEF_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 13 ), equalTo( columnNullable ) );
   }
 
@@ -1928,7 +2079,8 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_SQL_DATA_TYPE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 14 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 14 ),
+                equalTo( Integer.class.getName() ) );
   }
 
 
@@ -1954,19 +2106,20 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_SQL_DATETIME_SUB_hasRightTypeString() throws SQLException {
-    assertThat( rowsMetadata.getColumnTypeName( 15 ), equalTo( "INTEGER" ) );  // TODO:  Confirm.
+    assertThat( rowsMetadata.getColumnTypeName( 15 ), equalTo( "INTEGER" ) );
   }
 
   @Test
   public void test_SQL_DATETIME_SUB_hasRightTypeCode() throws SQLException {
-    assertThat( rowsMetadata.getColumnType( 15 ), equalTo( Types.INTEGER ) );  // TODO:  Confirm.
+    assertThat( rowsMetadata.getColumnType( 15 ), equalTo( Types.INTEGER ) );
   }
 
   @Ignore( "until fixed (\"none\" -> right class name) (DRILL-2137)" )
   @Test
   public void test_SQL_DATETIME_SUB_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 15 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 15 ),
+                equalTo( Integer.class.getName() ) );
   }
 
 
@@ -1984,197 +2137,131 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optBOOLEAN() throws SQLException {
-    final int value = mdrOptBOOLEAN.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBOOLEAN.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
-
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqTINYINT() throws SQLException {
-    final int value = mdrReqTINYINT.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqTINYINT.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqTINYINT() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTINYINT, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optSMALLINT() throws SQLException {
-    final int value = mdrOptSMALLINT.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptSMALLINT.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptSMALLINT, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqINTEGER() throws SQLException {
-    final int value = mdrReqINTEGER.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqINTEGER.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqINTEGER() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTEGER, "CHAR_OCTET_LENGTH" ), nullValue() );
+  }
+
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
+  @Test
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptBIGINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptREAL, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optBIGINT() throws SQLException {
-    final int value = mdrOptREAL.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptREAL.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptFLOAT, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optFLOAT() throws SQLException {
-    final int value = mdrOptFLOAT.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptFLOAT.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDOUBLE, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqDOUBLE() throws SQLException {
-    final int value = mdrReqDOUBLE.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqDOUBLE.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDECIMAL_5_3, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optREAL() throws SQLException {
-    final int value = mdrOptREAL.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptREAL.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
-  }
-
-  @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqDECIMAL_5_3() throws SQLException {
-    final int value = mdrReqDECIMAL_5_3.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqDECIMAL_5_3.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
-  }
-
-  @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqVARCHAR_10() throws SQLException {
-    assertThat( mdrReqVARCHAR_10.getInt( "CHAR_OCTET_LENGTH" ),
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
+    assertThat( getIntOrNull( mdrReqVARCHAR_10, "CHAR_OCTET_LENGTH" ),
                 equalTo( 10   /* chars. */
                          * 4  /* max. UTF-8 bytes per char. */ ) );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optVARCHAR() throws SQLException {
-    assertThat( mdrOptVARCHAR.getInt( "CHAR_OCTET_LENGTH" ),
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptVARCHAR() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARCHAR, "CHAR_OCTET_LENGTH" ),
                 equalTo( 1    /* chars. (default of 1) */
                          * 4  /* max. UTF-8 bytes per char. */ ) );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqCHAR_5() throws SQLException {
-    assertThat( mdrReqCHAR_5.getInt( "CHAR_OCTET_LENGTH" ),
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqCHAR_5() throws SQLException {
+    assertThat( getIntOrNull( mdrReqCHAR_5, "CHAR_OCTET_LENGTH" ),
                 equalTo( 5    /* chars. */
                          * 4  /* max. UTF-8 bytes per char. */ ) );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optVARBINARY_16() throws SQLException {
-    final int value = mdrOptVARBINARY_16.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptVARBINARY_16.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
+    assertThat( getIntOrNull( mdrOptVARBINARY_16, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
-    final int value = mdrOptBINARY_1048576.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBINARY_1048576.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBINARY_1048576, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_reqDATE() throws SQLException {
-    final int value = mdrReqDATE.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqDATE.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqDATE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDATE, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optTIME() throws SQLException {
-    final int value = mdrOptTIME.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptTIME.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTIME, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optTIME_7() throws SQLException {
-    final int value = mdrOptTIME_7.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptTIME_7.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptTIME_7() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIME_7, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optTIMESTAMP() throws SQLException {
-    final int value = mdrOptTIMESTAMP.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptTIMESTAMP.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
+    assertThat( getIntOrNull( mdrOptTIMESTAMP, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optINTERVAL_HM() throws SQLException {
-    final int value = mdrOptINTERVAL_H_S3.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptINTERVAL_H_S3.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_Y, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  public void test_CHAR_OCTET_LENGTH_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    final int value = mdrOptINTERVAL_Y4.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptINTERVAL_Y4.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_CHAR_OCTET_LENGTH_hasRightValue_tdbARRAY() throws SQLException {
-    final int value = mdrReqARRAY.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqARRAY.wasNull(), equalTo( true ) );  // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_CHAR_OCTET_LENGTH_hasRightValue_tbdMAP() throws SQLException {
-    final int value = mdrReqMAP.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrReqMAP.wasNull(), equalTo( true ) );  // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrReqMAP, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_CHAR_OCTET_LENGTH_hasRightValue_tbdSTRUCT() throws SQLException {
-    final int value = testRowSTRUCT.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowSTRUCT.wasNull(), equalTo( true ) );  // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkSTRUCT, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_CHAR_OCTET_LENGTH_hasRightValue_tbdUnion() throws SQLException {
-    final int value = testRowUnion.getInt( "CHAR_OCTET_LENGTH" );
-    assertThat( "wasNull() [after " + value + "]",
-                testRowUnion.wasNull(), equalTo( true ) );  // TODO:  Confirm.
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+    assertThat( getIntOrNull( mdrUnkUnion, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
@@ -2196,13 +2283,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_CHAR_OCTET_LENGTH_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 16 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 16 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_CHAR_OCTET_LENGTH_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 16 ), equalTo( columnNullable ) );
   }
 
@@ -2219,49 +2306,52 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_ORDINAL_POSITION_hasRightValue_optBOOLEAN() throws SQLException {
-    assertThat( mdrOptBOOLEAN.getInt( "ORDINAL_POSITION" ), equalTo( 1 ) );
+  public void test_ORDINAL_POSITION_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "ORDINAL_POSITION" ), equalTo( 1 ) );
+  }
+
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_ORDINAL_POSITION_hasRightValue_mdrReqTINYINT() throws SQLException {
+    assertThat( getIntOrNull( mdrReqTINYINT, "ORDINAL_POSITION" ), equalTo( 2 ) );
+  }
+
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
+  @Test
+  public void test_ORDINAL_POSITION_hasRightValue_mdrOptSMALLINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptSMALLINT, "ORDINAL_POSITION" ), equalTo( 3 ) );
   }
 
   @Test
-  public void test_ORDINAL_POSITION_hasRightValue_reqTINYINT() throws SQLException {
-    assertThat( mdrReqTINYINT.getInt( "ORDINAL_POSITION" ), equalTo( 2 ) );
+  public void test_ORDINAL_POSITION_hasRightValue_mdrReqINTEGER() throws SQLException {
+    assertThat( getIntOrNull( mdrReqINTEGER, "ORDINAL_POSITION" ), equalTo( 4 ) );
   }
 
   @Test
-  public void test_ORDINAL_POSITION_hasRightValue_optSMALLINT() throws SQLException {
-    assertThat( mdrOptSMALLINT.getInt( "ORDINAL_POSITION" ), equalTo( 3 ) );
+  public void test_ORDINAL_POSITION_hasRightValue_mdrOptBIGINT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBIGINT, "ORDINAL_POSITION" ), equalTo( 5 ) );
+  }
+
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
+  @Test
+  public void test_ORDINAL_POSITION_hasRightValue_mdrOptREAL() throws SQLException {
+    assertThat( getIntOrNull( mdrOptREAL, "ORDINAL_POSITION" ), equalTo( 6 ) );
   }
 
   @Test
-  public void test_ORDINAL_POSITION_hasRightValue_reqINTEGER() throws SQLException {
-    assertThat( mdrReqINTEGER.getInt( "ORDINAL_POSITION" ), equalTo( 4 ) );
+  public void test_ORDINAL_POSITION_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( getIntOrNull( mdrOptFLOAT, "ORDINAL_POSITION" ), equalTo( 7 ) );
   }
 
   @Test
-  public void test_ORDINAL_POSITION_hasRightValue_optBIGINT() throws SQLException {
-    assertThat( mdrOptBIGINT.getInt( "ORDINAL_POSITION" ), equalTo( 5 ) );
+  public void test_ORDINAL_POSITION_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( getIntOrNull( mdrReqDOUBLE, "ORDINAL_POSITION" ), equalTo( 8 ) );
   }
 
   @Test
-  public void test_ORDINAL_POSITION_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getInt( "ORDINAL_POSITION" ), equalTo( 6 ) );
-  }
-
-  @Test
-  public void test_ORDINAL_POSITION_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getInt( "ORDINAL_POSITION" ), equalTo( 7 ) );
-  }
-
-  @Test
-  public void test_ORDINAL_POSITION_hasRightValue_optREAL() throws SQLException {
-    assertThat( mdrOptREAL.getInt( "ORDINAL_POSITION" ), equalTo( 8 ) );
-  }
-
-  @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_ORDINAL_POSITION_hasRightValue_tdbARRAY() throws SQLException {
-    assertThat( mdrReqARRAY.getInt( "ORDINAL_POSITION" ), equalTo( 14 ) );
+    assertThat( getIntOrNull( mdrReqARRAY, "ORDINAL_POSITION" ), equalTo( 14 ) );
   }
 
   @Test
@@ -2271,25 +2361,25 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_ORDINAL_POSITION_hasRightTypeString() throws SQLException {
-    assertThat( rowsMetadata.getColumnTypeName( 17 ), equalTo( "INTEGER" ) );  // TODO:  Confirm.
+    assertThat( rowsMetadata.getColumnTypeName( 17 ), equalTo( "INTEGER" ) );
   }
 
   @Test
   public void test_ORDINAL_POSITION_hasRightTypeCode() throws SQLException {
-    assertThat( rowsMetadata.getColumnType( 17 ), equalTo( Types.INTEGER ) );  // TODO:  Confirm.
+    assertThat( rowsMetadata.getColumnType( 17 ), equalTo( Types.INTEGER ) );
   }
 
   @Ignore( "until fixed (\"none\" -> right class name) (DRILL-2137)" )
   @Test
   public void test_ORDINAL_POSITION_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 17 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 17 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_ORDINAL_POSITION_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 17 ), equalTo( columnNoNulls ) );
   }
 
@@ -2303,179 +2393,164 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   // - Drill:  ?
   // - (Meta): VARCHAR (NVARCHAR?); Not nullable?
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_IS_NULLABLE_isAtRightPosition() throws SQLException {
     assertThat( rowsMetadata.getColumnLabel( 18 ), equalTo( "IS_NULLABLE" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     assertThat( mdrOptBOOLEAN.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until TINYINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_IS_NULLABLE_hasRightValue_reqTINYINT() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrReqTINYINT() throws SQLException {
     assertThat( mdrReqTINYINT.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until SMALLINT is implemented. (DRILL-2470)" )
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optSMALLINT() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptSMALLINT() throws SQLException {
     assertThat( mdrOptSMALLINT.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_reqINTEGER() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrReqINTEGER() throws SQLException {
     assertThat( mdrReqINTEGER.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optBIGINT() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptBIGINT() throws SQLException {
     assertThat( mdrOptBIGINT.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
+  @Ignore( "until REAL is implemented. (DRILL-2470)" )
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optFLOAT() throws SQLException {
-    assertThat( mdrOptFLOAT.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
-  }
-
-  // (See to-do note near top of file about reviewing nullability.)
-  @Test
-  public void test_IS_NULLABLE_hasRightValue_reqDOUBLE() throws SQLException {
-    assertThat( mdrReqDOUBLE.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
-  }
-
-  // (See to-do note near top of file about reviewing nullability.)
-  @Test
-  public void test_IS_NULLABLE_hasRightValue_optREAL() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptREAL() throws SQLException {
     assertThat( mdrOptREAL.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_reqDECIMAL_5_3() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptFLOAT() throws SQLException {
+    assertThat( mdrOptFLOAT.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+  }
+
+  @Test
+  public void test_IS_NULLABLE_hasRightValue_mdrReqDOUBLE() throws SQLException {
+    assertThat( mdrReqDOUBLE.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
+  }
+
+  @Test
+  public void test_IS_NULLABLE_hasRightValue_mdrReqDECIMAL_5_3() throws SQLException {
     assertThat( mdrReqDECIMAL_5_3.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_reqVARCHAR_10() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrReqVARCHAR_10() throws SQLException {
     assertThat( mdrReqVARCHAR_10.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optVARCHAR() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptVARCHAR() throws SQLException {
     assertThat( mdrOptVARCHAR.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_reqCHAR_5() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrReqCHAR_5() throws SQLException {
     assertThat( mdrReqCHAR_5.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optVARBINARY_16() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptVARBINARY_16() throws SQLException {
     assertThat( mdrOptVARBINARY_16.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optBINARY_1048576CHECK() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
     assertThat( mdrOptBINARY_1048576.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_reqDATE() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrReqDATE() throws SQLException {
     assertThat( mdrReqDATE.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optTIME() throws SQLException {
-    assertThat( mdrOptTIME.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+  public void test_IS_NULLABLE_hasRightValue_mdrReqTIME() throws SQLException {
+    assertThat( mdrReqTIME.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optTIME_7() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptTIME_7() throws SQLException {
     assertThat( mdrOptTIME_7.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optTIMESTAMP() throws SQLException {
+  public void test_IS_NULLABLE_hasRightValue_mdrOptTIMESTAMP() throws SQLException {
     assertThat( mdrOptTIMESTAMP.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optINTERVAL_HM() throws SQLException {
-    assertThat( mdrOptINTERVAL_H_S3.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+  public void test_IS_NULLABLE_hasRightValue_mdrReqINTERVAL_Y() throws SQLException {
+    assertThat( mdrReqINTERVAL_Y.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  public void test_IS_NULLABLE_hasRightValue_optINTERVAL_Y3() throws SQLException {
-    assertThat( mdrOptINTERVAL_Y4.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+  public void test_IS_NULLABLE_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
+    assertThat( mdrReqINTERVAL_3H_S1.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_IS_NULLABLE_hasRightValue_tdbARRAY() throws SQLException {
+    assertThat( mdrReqARRAY.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+    // To-do:  Determine which.
     assertThat( mdrReqARRAY.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
+    // To-do:  Determine which.
+    assertThat( mdrReqARRAY.getString( "IS_NULLABLE" ), equalTo( "" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
-  @Ignore("Enable once we have a test plugin which supports all the needed types.")
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_IS_NULLABLE_hasRightValue_tbdMAP() throws SQLException {
+    assertThat( mdrReqMAP.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+    // To-do:  Determine which.
     assertThat( mdrReqMAP.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
+    // To-do:  Determine which.
+    assertThat( mdrReqMAP.getString( "IS_NULLABLE" ), equalTo( "" ) );
   }
 
-  @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_IS_NULLABLE_hasRightValue_tbdSTRUCT() throws SQLException {
-    assertThat( testRowSTRUCT.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+    assertThat( mdrUnkSTRUCT.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
     // To-do:  Determine which.
-    assertThat( testRowSTRUCT.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
+    assertThat( mdrUnkSTRUCT.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
     // To-do:  Determine which.
-    assertThat( testRowSTRUCT.getString( "IS_NULLABLE" ), equalTo( "" ) );
+    assertThat( mdrUnkSTRUCT.getString( "IS_NULLABLE" ), equalTo( "" ) );
   }
 
-  @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
+  @Ignore( "until we have test plugin supporting all needed types (DRILL-3253)." )
   public void test_IS_NULLABLE_hasRightValue_tbdUnion() throws SQLException {
-    assertThat( testRowUnion.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+    assertThat( mdrUnkUnion.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
     // To-do:  Determine which.
-    assertThat( testRowUnion.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
+    assertThat( mdrUnkUnion.getString( "IS_NULLABLE" ), equalTo( "NO" ) );
     // To-do:  Determine which.
-    assertThat( testRowUnion.getString( "IS_NULLABLE" ), equalTo( "" ) );
+    assertThat( mdrUnkUnion.getString( "IS_NULLABLE" ), equalTo( "" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_IS_NULLABLE_hasSameNameAndLabel() throws SQLException {
     assertThat( rowsMetadata.getColumnName( 18 ), equalTo( "IS_NULLABLE" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_IS_NULLABLE_hasRightTypeString() throws SQLException {
     assertThat( rowsMetadata.getColumnTypeName( 18 ), equalTo( "VARCHAR" ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_IS_NULLABLE_hasRightTypeCode() throws SQLException {
     assertThat( rowsMetadata.getColumnType( 18 ), equalTo( Types.VARCHAR ) );
@@ -2485,13 +2560,14 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_IS_NULLABLE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 18 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 18 ),
+                equalTo( String.class.getName() ) );
   }
 
   @Ignore( "until resolved:  any requirement on nullability (DRILL-2420?)" )
   @Test
   public void test_IS_NULLABLE_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 18 ), equalTo( columnNoNulls ) );
   }
 
@@ -2509,11 +2585,9 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_SCOPE_CATALOG_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_SCOPE_CATALOG_hasRightValue_mdrOptBOOLEAN() throws SQLException {
       final String value = mdrOptBOOLEAN.getString( "SCOPE_SCHEMA" );
-      assertThat( "wasNull() [after " + value + "]",
-                mdrOptBOOLEAN.wasNull(), equalTo( true ) );
-      assertThat( value, nullValue() );
+        assertThat( value, nullValue() );
     }
 
   @Test
@@ -2535,13 +2609,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_SCOPE_CATALOG_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 19 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 19 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_SCOPE_CATALOG_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 19 ), equalTo( columnNullable ) );
   }
 
@@ -2559,7 +2633,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_SCOPE_SCHEMA_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_SCOPE_SCHEMA_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     final String value = mdrOptBOOLEAN.getString( "SCOPE_SCHEMA" );
     assertThat( value, nullValue() );
   }
@@ -2583,13 +2657,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_SCOPE_SCHEMA_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 20 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 20 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_SCOPE_SCHEMA_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 20 ), equalTo( columnNullable ) );
   }
 
@@ -2607,7 +2681,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_SCOPE_TABLE_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_SCOPE_TABLE_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     final String value = mdrOptBOOLEAN.getString( "SCOPE_TABLE" );
     assertThat( value, nullValue() );
   }
@@ -2631,13 +2705,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_SCOPE_TABLE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 21 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 21 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_SCOPE_TABLE_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 21 ), equalTo( columnNullable ) );
   }
 
@@ -2656,11 +2730,8 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_SOURCE_DATA_TYPE_hasRightValue_optBOOLEAN() throws SQLException {
-    final int value = mdrOptBOOLEAN.getInt( "SOURCE_DATA_TYPE" );
-    assertThat( "wasNull() [after " + value + "]",
-                mdrOptBOOLEAN.wasNull(), equalTo( true ) );
-    assertThat( value, equalTo( 0 /* NULL */ ) );
+  public void test_SOURCE_DATA_TYPE_hasRightValue_mdrOptBOOLEAN() throws SQLException {
+    assertThat( getIntOrNull( mdrOptBOOLEAN, "SOURCE_DATA_TYPE" ), nullValue() );
   }
 
   @Test
@@ -2670,14 +2741,14 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_SOURCE_DATA_TYPE_hasRightTypeString() throws SQLException {
-    // TODO:  Resolve:  Bug DRILL-2135 workaround:
+    // TODO(DRILL-2135):  Resolve workaround:
     //assertThat( rsMetadata.getColumnTypeName( 22 ), equalTo( "SMALLINT" ) );
     assertThat( rowsMetadata.getColumnTypeName( 22 ), equalTo( "INTEGER" ) );
   }
 
   @Test
   public void test_SOURCE_DATA_TYPE_hasRightTypeCode() throws SQLException {
-    // TODO:  Resolve:  Bug DRILL-2135 workaround:
+    // TODO(DRILL-2135):  Resolve workaround:
     //assertThat( rsMetadata.getColumnType( 22 ), equalTo( Types.SMALLINT ) );
     assertThat( rowsMetadata.getColumnType( 22 ), equalTo( Types.INTEGER ) );
   }
@@ -2686,13 +2757,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_SOURCE_DATA_TYPE_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.Integer" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 22 ), equalTo( Integer.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 22 ),
+                equalTo( Integer.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_SOURCE_DATA_TYPE_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 22 ), equalTo( columnNullable ) );
   }
 
@@ -2712,7 +2783,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_IS_AUTOINCREMENT_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_IS_AUTOINCREMENT_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     // TODO:  Can is be 'NO' (not auto-increment) rather than '' (unknown)?
     assertThat( mdrOptBOOLEAN.getString( "IS_AUTOINCREMENT" ), equalTo( "" ) );
   }
@@ -2738,13 +2809,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_IS_AUTOINCREMENT_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 23 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 23 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_IS_AUTOINCREMENT_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 23 ), equalTo( columnNoNulls ) );
   }
 
@@ -2764,7 +2835,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   }
 
   @Test
-  public void test_IS_GENERATEDCOLUMN_hasRightValue_optBOOLEAN() throws SQLException {
+  public void test_IS_GENERATEDCOLUMN_hasRightValue_mdrOptBOOLEAN() throws SQLException {
     // TODO:  Can is be 'NO' (not auto-increment) rather than '' (unknown)?
     assertThat( mdrOptBOOLEAN.getString( "IS_GENERATEDCOLUMN" ), equalTo( "" ) );
   }
@@ -2790,13 +2861,13 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_IS_GENERATEDCOLUMN_hasRightClass() throws SQLException {
     // TODO:  Confirm that this "java.lang.String" is correct:
-    assertThat( rowsMetadata.getColumnClassName( 24 ), equalTo( String.class.getName() ) );
+    assertThat( rowsMetadata.getColumnClassName( 24 ),
+                equalTo( String.class.getName() ) );
   }
 
-  // (See to-do note near top of file about reviewing nullability.)
   @Test
   public void test_IS_GENERATEDCOLUMN_hasRightNullability() throws SQLException {
-    assertThat( "ResultSetMetaData.column...Null... nullability code",
+    assertThat( "ResultSetMetaData.column...Null... nullability code:",
                 rowsMetadata.isNullable( 24 ), equalTo( columnNoNulls ) );
   }
 

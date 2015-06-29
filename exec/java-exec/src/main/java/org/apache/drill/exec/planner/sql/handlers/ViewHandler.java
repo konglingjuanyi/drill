@@ -19,11 +19,10 @@ package org.apache.drill.exec.planner.sql.handlers;
 
 import java.io.IOException;
 
+import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.schema.Schema;
-import org.apache.calcite.schema.Schema.TableType;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Table;
-import org.apache.calcite.tools.Planner;
 import org.apache.calcite.tools.RelConversionException;
 import org.apache.calcite.tools.ValidationException;
 
@@ -40,22 +39,21 @@ import org.apache.drill.exec.work.foreman.ForemanSetupException;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.sql.SqlNode;
 
-public abstract class ViewHandler extends AbstractSqlHandler {
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ViewHandler.class);
+public abstract class ViewHandler extends DefaultSqlHandler {
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ViewHandler.class);
 
-  protected Planner planner;
   protected QueryContext context;
 
-  public ViewHandler(Planner planner, QueryContext context) {
-    this.planner = planner;
-    this.context = context;
+  public ViewHandler(SqlHandlerConfig config) {
+    super(config);
+    this.context = config.getContext();
   }
 
   /** Handler for Create View DDL command */
   public static class CreateView extends ViewHandler {
 
-    public CreateView(Planner planner, QueryContext context) {
-      super(planner, context);
+    public CreateView(SqlHandlerConfig config) {
+      super(config);
     }
 
     @Override
@@ -67,8 +65,11 @@ public abstract class ViewHandler extends AbstractSqlHandler {
       // Store the viewSql as view def SqlNode is modified as part of the resolving the new table definition below.
       final String viewSql = createView.getQuery().toString();
 
-      final RelNode newViewRelNode =
-          SqlHandlerUtil.resolveNewTableRel(true, planner, createView.getFieldNames(), createView.getQuery());
+      final ConvertedRelNode convertedRelNode = validateAndConvert(createView.getQuery());
+      final RelDataType validatedRowType = convertedRelNode.getValidatedRowType();
+      final RelNode queryRelNode = convertedRelNode.getConvertedNode();
+
+      final RelNode newViewRelNode = SqlHandlerUtil.resolveNewTableRel(true, createView.getFieldNames(), validatedRowType, queryRelNode);
 
       final SchemaPlus defaultSchema = context.getNewDefaultSchema();
       final AbstractSchema drillSchema = SchemaUtilites.resolveToMutableDrillSchema(defaultSchema, createView.getSchemaPath());
@@ -85,7 +86,7 @@ public abstract class ViewHandler extends AbstractSqlHandler {
           throw UserException.validationError()
               .message("A non-view table with given name [%s] already exists in schema [%s]",
                   newViewName, schemaPath)
-              .build();
+              .build(logger);
         }
 
         if (existingTable.getJdbcTableType() == Schema.TableType.VIEW && !createView.getReplace()) {
@@ -93,7 +94,7 @@ public abstract class ViewHandler extends AbstractSqlHandler {
           throw UserException.validationError()
               .message("A view with given name [%s] already exists in schema [%s]",
                   newViewName, schemaPath)
-              .build();
+              .build(logger);
         }
       }
 
@@ -107,8 +108,8 @@ public abstract class ViewHandler extends AbstractSqlHandler {
 
   /** Handler for Drop View DDL command. */
   public static class DropView extends ViewHandler {
-    public DropView(QueryContext context) {
-      super(null, context);
+    public DropView(SqlHandlerConfig config) {
+      super(config);
     }
 
     @Override
@@ -124,11 +125,11 @@ public abstract class ViewHandler extends AbstractSqlHandler {
       if (existingTable != null && existingTable.getJdbcTableType() != Schema.TableType.VIEW) {
         throw UserException.validationError()
             .message("[%s] is not a VIEW in schema [%s]", viewToDrop, schemaPath)
-            .build();
+            .build(logger);
       } else if (existingTable == null) {
         throw UserException.validationError()
             .message("Unknown view [%s] in schema [%s].", viewToDrop, schemaPath)
-            .build();
+            .build(logger);
       }
 
       drillSchema.dropView(viewToDrop);

@@ -18,7 +18,6 @@
 package org.apache.drill.exec.store.mongo;
 
 import java.io.IOException;
-import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +36,7 @@ import org.apache.drill.exec.store.AbstractRecordReader;
 import org.apache.drill.exec.vector.BaseValueVector;
 import org.apache.drill.exec.vector.complex.fn.JsonReader;
 import org.apache.drill.exec.vector.complex.impl.VectorContainerWriter;
+import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,47 +45,45 @@ import com.google.common.base.Stopwatch;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.mongodb.BasicDBObject;
-import com.mongodb.DB;
-import com.mongodb.DBCollection;
-import com.mongodb.DBCursor;
-import com.mongodb.DBObject;
 import com.mongodb.MongoClient;
-import com.mongodb.MongoClientOptions;
-import com.mongodb.MongoCredential;
-import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoDatabase;
 
 public class MongoRecordReader extends AbstractRecordReader {
   static final Logger logger = LoggerFactory.getLogger(MongoRecordReader.class);
 
-  private DBCollection collection;
-  private DBCursor cursor;
+  private MongoCollection<Document> collection;
+  private MongoCursor<Document> cursor;
 
   private JsonReader jsonReader;
   private VectorContainerWriter writer;
 
   private BasicDBObject filters;
-  private DBObject fields;
+  private final BasicDBObject fields;
 
-  private MongoClientOptions clientOptions;
-  private MongoCredential credential;
-  private FragmentContext fragmentContext;
+  private final FragmentContext fragmentContext;
   private OperatorContext operatorContext;
 
-  private Boolean enableAllTextMode;
-  private Boolean readNumbersAsDouble;
+  private final MongoStoragePlugin plugin;
 
-  public MongoRecordReader(MongoSubScan.MongoSubScanSpec subScanSpec,
-      List<SchemaPath> projectedColumns, FragmentContext context,
-      MongoClientOptions clientOptions, MongoCredential credential) {
-    this.clientOptions = clientOptions;
-    this.credential = credential;
-    this.fields = new BasicDBObject();
+  private final boolean enableAllTextMode;
+  private final boolean readNumbersAsDouble;
+
+  public MongoRecordReader(
+      MongoSubScan.MongoSubScanSpec subScanSpec,
+      List<SchemaPath> projectedColumns,
+      FragmentContext context,
+      MongoStoragePlugin plugin) {
+
+    fields = new BasicDBObject();
     // exclude _id field, if not mentioned by user.
-    this.fields.put(DrillMongoConstants.ID, Integer.valueOf(0));
+    fields.put(DrillMongoConstants.ID, Integer.valueOf(0));
     setColumns(projectedColumns);
-    this.fragmentContext = context;
-    this.filters = new BasicDBObject();
+    fragmentContext = context;
+    this.plugin = plugin;
+    filters = new BasicDBObject();
     Map<String, List<BasicDBObject>> mergedFilters = MongoUtils.mergeFilters(
         subScanSpec.getMinFilters(), subScanSpec.getMaxFilters());
     buildFilters(subScanSpec.getFilter(), mergedFilters);
@@ -95,8 +93,7 @@ public class MongoRecordReader extends AbstractRecordReader {
   }
 
   @Override
-  protected Collection<SchemaPath> transformColumns(
-      Collection<SchemaPath> projectedColumns) {
+  protected Collection<SchemaPath> transformColumns(Collection<SchemaPath> projectedColumns) {
     Set<SchemaPath> transformed = Sets.newLinkedHashSet();
     if (!isStarQuery()) {
       for (SchemaPath column : projectedColumns ) {
@@ -133,19 +130,14 @@ public class MongoRecordReader extends AbstractRecordReader {
   }
 
   private void init(MongoSubScan.MongoSubScanSpec subScanSpec) {
-    try {
-      List<String> hosts = subScanSpec.getHosts();
-      List<ServerAddress> addresses = Lists.newArrayList();
-      for (String host : hosts) {
-        addresses.add(new ServerAddress(host));
-      }
-      MongoClient client = MongoCnxnManager.getClient(addresses, clientOptions,
-          credential);
-      DB db = client.getDB(subScanSpec.getDbName());
-      collection = db.getCollection(subScanSpec.getCollectionName());
-    } catch (UnknownHostException e) {
-      throw new DrillRuntimeException(e.getMessage(), e);
+    List<String> hosts = subScanSpec.getHosts();
+    List<ServerAddress> addresses = Lists.newArrayList();
+    for (String host : hosts) {
+      addresses.add(new ServerAddress(host));
     }
+    MongoClient client = plugin.getClient(addresses);
+    MongoDatabase db = client.getDatabase(subScanSpec.getDbName());
+    collection = db.getCollection(subScanSpec.getCollectionName());
   }
 
   @Override
@@ -153,13 +145,18 @@ public class MongoRecordReader extends AbstractRecordReader {
     this.operatorContext = context;
     this.writer = new VectorContainerWriter(output);
     this.jsonReader = new JsonReader(fragmentContext.getManagedBuffer(), Lists.newArrayList(getColumns()), enableAllTextMode, false, readNumbersAsDouble);
-    logger.info("Filters Applied : " + filters);
-    logger.info("Fields Selected :" + fields);
-    cursor = collection.find(filters, fields);
+
   }
 
   @Override
   public int next() {
+    if(cursor == null){
+      logger.info("Filters Applied : " + filters);
+      logger.info("Fields Selected :" + fields);
+      cursor = collection.find(filters).projection(fields).batchSize(100).iterator();
+    }
+
+
     writer.allocate();
     writer.reset();
 
@@ -170,7 +167,7 @@ public class MongoRecordReader extends AbstractRecordReader {
     try {
       while (docCount < BaseValueVector.INITIAL_VALUE_ALLOCATION && cursor.hasNext()) {
         writer.setPosition(docCount);
-        String doc = cursor.next().toString();
+        String doc = cursor.next().toJson();
         jsonReader.setSource(doc.getBytes(Charsets.UTF_8));
         jsonReader.write(writer);
         docCount++;

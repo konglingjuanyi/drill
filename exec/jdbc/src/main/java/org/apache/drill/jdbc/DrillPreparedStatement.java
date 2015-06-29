@@ -1,11 +1,10 @@
 /**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership.  The ASF
+ * licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  * http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -17,36 +16,20 @@
  */
 package org.apache.drill.jdbc;
 
-import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.PreparedStatement;
 
-import net.hydromatic.avatica.AvaticaPrepareResult;
-import net.hydromatic.avatica.AvaticaPreparedStatement;
 
 /**
- * Implementation of {@link java.sql.PreparedStatement} for Drill.
+ * Drill-specific {@link PreparedStatement}.
  *
  * <p>
- * This class has sub-classes which implement JDBC 3.0 and JDBC 4.0 APIs; it is instantiated using
- * {@link net.hydromatic.avatica.AvaticaFactory#newPreparedStatement}.
+ *   Setting parameters is not supported; parameter-setting methods such as
+ *   {@link setString(int, String)} throw
+ *   {@link SQLFeatureNotSupportedException}.
  * </p>
+ * @see #unwrap
  */
-abstract class DrillPreparedStatement extends AvaticaPreparedStatement
-    implements DrillRemoteStatement {
+public interface DrillPreparedStatement extends PreparedStatement {
 
-  protected DrillPreparedStatement(DrillConnectionImpl connection, AvaticaPrepareResult prepareResult,
-      int resultSetType, int resultSetConcurrency, int resultSetHoldability) throws SQLException {
-    super(connection, prepareResult, resultSetType, resultSetConcurrency, resultSetHoldability);
-    connection.openStatementsRegistry.addStatement(this);
-  }
-
-  @Override
-  public DrillConnectionImpl getConnection() {
-    return (DrillConnectionImpl) super.getConnection();
-  }
-
-  @Override
-  public void cleanup() {
-    final DrillConnectionImpl connection1 = (DrillConnectionImpl) connection;
-    connection1.openStatementsRegistry.removeStatement(this);
-  }
 }

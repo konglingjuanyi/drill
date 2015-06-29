@@ -31,13 +31,14 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Table;
 
 import org.apache.drill.common.exceptions.UserException;
+import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.exec.dotdrill.View;
 import org.apache.drill.exec.planner.logical.CreateTableEntry;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
 
-public abstract class AbstractSchema implements Schema, SchemaPartitionExplorer {
+public abstract class AbstractSchema implements Schema, SchemaPartitionExplorer, AutoCloseable {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(AbstractSchema.class);
 
   protected final List<String> schemaPath;
@@ -100,7 +101,7 @@ public abstract class AbstractSchema implements Schema, SchemaPartitionExplorer 
   public boolean createView(View view) throws IOException {
     throw UserException.unsupportedError()
         .message("Creating new view is not supported in schema [%s]", getSchemaPath())
-        .build();
+        .build(logger);
   }
 
   /**
@@ -112,13 +113,19 @@ public abstract class AbstractSchema implements Schema, SchemaPartitionExplorer 
   public void dropView(String viewName) throws IOException {
     throw UserException.unsupportedError()
         .message("Dropping a view is supported in schema [%s]", getSchemaPath())
-        .build();
+        .build(logger);
   }
 
-  public CreateTableEntry createNewTable(String tableName) {
+  /**
+   *
+   * @param tableName : new table name.
+   * @param partitionColumns : list of partition columns. Empty list if there is no partition columns.
+   * @return
+   */
+  public CreateTableEntry createNewTable(String tableName, List<String> partitionColumns) {
     throw UserException.unsupportedError()
         .message("Creating new tables is not supported in schema [%s]", getSchemaPath())
-        .build();
+        .build(logger);
   }
 
   /**
@@ -179,5 +186,8 @@ public abstract class AbstractSchema implements Schema, SchemaPartitionExplorer 
     return true;
   }
 
-
+  @Override
+  public void close() throws Exception {
+    // no-op: default implementation for most implementations.
+  }
 }

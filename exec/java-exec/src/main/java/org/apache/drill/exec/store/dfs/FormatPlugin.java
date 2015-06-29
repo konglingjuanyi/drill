@@ -40,9 +40,15 @@ public interface FormatPlugin {
 
   public boolean supportsWrite();
 
+  /**
+   * Indicates whether this FormatPlugin supports auto-partitioning for CTAS statements
+   * @return true if auto-partitioning is supported
+   */
+  public boolean supportsAutoPartitioning();
+
   public FormatMatcher getMatcher();
 
-  public AbstractWriter getWriter(PhysicalOperator child, String location) throws IOException;
+  public AbstractWriter getWriter(PhysicalOperator child, String location, List<String> partitionColumns) throws IOException;
 
   public Set<StoragePluginOptimizerRule> getOptimizerRules();
 

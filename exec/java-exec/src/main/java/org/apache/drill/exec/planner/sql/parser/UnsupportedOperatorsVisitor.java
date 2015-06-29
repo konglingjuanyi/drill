@@ -91,6 +91,11 @@ public class UnsupportedOperatorsVisitor extends SqlShuttle {
       // This is used to keep track of the window function which has been defined
       SqlNode definedWindow = null;
       for(SqlNode nodeInSelectList : sqlSelect.getSelectList()) {
+        if(nodeInSelectList.getKind() == SqlKind.AS
+            && (((SqlCall) nodeInSelectList).getOperandList().get(0).getKind() == SqlKind.OVER)) {
+          nodeInSelectList = ((SqlCall) nodeInSelectList).getOperandList().get(0);
+        }
+
         if(nodeInSelectList.getKind() == SqlKind.OVER) {
           // Throw exceptions if window functions are disabled
           if(!context.getOptions().getOption(ExecConstants.ENABLE_WINDOW_FUNCTIONS).bool_val) {
@@ -136,46 +141,6 @@ public class UnsupportedOperatorsVisitor extends SqlShuttle {
             }
           }
 
-          // DRILL-3188
-          // Disable frame which is other than the default
-          // (i.e., BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-          if(((SqlCall) nodeInSelectList).operand(1) instanceof SqlWindow) {
-            SqlWindow window = (SqlWindow) ((SqlCall) nodeInSelectList).operand(1);
-
-            SqlNode lowerBound = window.getLowerBound();
-            SqlNode upperBound = window.getUpperBound();
-
-            // If no frame is specified
-            // it is a default frame
-            boolean isSupported = (lowerBound == null && upperBound == null);
-
-            // When OVER clause contain an ORDER BY clause the following frames are equivalent to the default frame:
-                // RANGE UNBOUNDED PRECEDING
-                // RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            if(window.getOrderList().size() != 0
-                && !window.isRows()
-                    && SqlWindow.isUnboundedPreceding(lowerBound)
-                        && (upperBound == null || SqlWindow.isCurrentRow(upperBound))) {
-              isSupported = true;
-            }
-
-            // When OVER clause doesn't contain an ORDER BY clause, the following are equivalent to the default frame:
-                // RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-                // ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-            if(window.getOrderList().size() == 0
-                && SqlWindow.isUnboundedPreceding(lowerBound)
-                    && SqlWindow.isUnboundedFollowing(upperBound)) {
-              isSupported = true;
-            }
-
-            if(!isSupported) {
-              unsupportedOperatorCollector.setException(SqlUnsupportedException.ExceptionType.FUNCTION,
-                  "This type of window frame is currently not supported \n" +
-                  "See Apache Drill JIRA: DRILL-3188");
-              throw new UnsupportedOperationException();
-            }
-          }
-
           // DRILL-3196
           // Disable multiple partitions in a SELECT-CLAUSE
           SqlNode window = ((SqlCall) nodeInSelectList).operand(1);
@@ -206,6 +171,46 @@ public class UnsupportedOperatorsVisitor extends SqlShuttle {
             }
           }
         }
+      }
+    }
+
+    // DRILL-3188
+    // Disable frame which is other than the default
+    // (i.e., BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    if(sqlCall instanceof SqlWindow) {
+      SqlWindow window = (SqlWindow) sqlCall;
+
+      SqlNode lowerBound = window.getLowerBound();
+      SqlNode upperBound = window.getUpperBound();
+
+      // If no frame is specified
+      // it is a default frame
+      boolean isSupported = (lowerBound == null && upperBound == null);
+
+      // When OVER clause contain an ORDER BY clause the following frames are equivalent to the default frame:
+      // RANGE UNBOUNDED PRECEDING
+      // RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      if(window.getOrderList().size() != 0
+          && !window.isRows()
+          && SqlWindow.isUnboundedPreceding(lowerBound)
+          && (upperBound == null || SqlWindow.isCurrentRow(upperBound))) {
+        isSupported = true;
+      }
+
+      // When OVER clause doesn't contain an ORDER BY clause, the following are equivalent to the default frame:
+      // RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+      // ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+      if(window.getOrderList().size() == 0
+          && SqlWindow.isUnboundedPreceding(lowerBound)
+          && SqlWindow.isUnboundedFollowing(upperBound)) {
+        isSupported = true;
+      }
+
+      if(!isSupported) {
+        unsupportedOperatorCollector.setException(SqlUnsupportedException.ExceptionType.FUNCTION,
+            "This type of window frame is currently not supported \n" +
+            "See Apache Drill JIRA: DRILL-3188");
+        throw new UnsupportedOperationException();
       }
     }
 

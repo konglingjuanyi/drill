@@ -20,7 +20,6 @@ package org.apache.drill.exec.planner.sql.handlers;
 import java.io.IOException;
 
 import org.apache.calcite.rel.type.RelDataType;
-import org.apache.calcite.sql.TypedSqlNode;
 import org.apache.calcite.tools.RelConversionException;
 import org.apache.calcite.tools.ValidationException;
 
@@ -44,7 +43,7 @@ import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 
 public class ExplainHandler extends DefaultSqlHandler {
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ExplainHandler.class);
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ExplainHandler.class);
 
   private ResultMode mode;
   private SqlExplainLevel level = SqlExplainLevel.ALL_ATTRIBUTES;
@@ -53,18 +52,14 @@ public class ExplainHandler extends DefaultSqlHandler {
   }
 
   @Override
-  public PhysicalPlan getPlan(SqlNode node) throws ValidationException, RelConversionException, IOException, ForemanSetupException {
-    SqlNode sqlNode = rewrite(node);
-    TypedSqlNode validatedTypedSqlNode = validateNode(sqlNode);
-    SqlNode validated = validatedTypedSqlNode.getSqlNode();
-    RelDataType validatedRowType = validatedTypedSqlNode.getType();
+  public PhysicalPlan getPlan(SqlNode sqlNode) throws ValidationException, RelConversionException, IOException, ForemanSetupException {
+    final ConvertedRelNode convertedRelNode = validateAndConvert(sqlNode);
+    final RelDataType validatedRowType = convertedRelNode.getValidatedRowType();
+    final RelNode queryRelNode = convertedRelNode.getConvertedNode();
 
-    RelNode rel = convertToRel(validated);
-    rel = preprocessNode(rel);
-
-    log("Optiq Logical", rel);
-    DrillRel drel = convertToDrel(rel, validatedRowType);
-    log("Drill Logical", drel);
+    log("Optiq Logical", queryRelNode, logger);
+    DrillRel drel = convertToDrel(queryRelNode, validatedRowType);
+    log("Drill Logical", drel, logger);
 
     if (mode == ResultMode.LOGICAL) {
       LogicalExplain logicalResult = new LogicalExplain(drel, level, context);
@@ -72,10 +67,10 @@ public class ExplainHandler extends DefaultSqlHandler {
     }
 
     Prel prel = convertToPrel(drel);
-    log("Drill Physical", prel);
+    log("Drill Physical", prel, logger);
     PhysicalOperator pop = convertToPop(prel);
     PhysicalPlan plan = convertToPlan(pop);
-    log("Drill Plan", plan);
+    log("Drill Plan", plan, logger);
     PhysicalExplain physicalResult = new PhysicalExplain(prel, plan, level, context);
     return DirectPlan.createDirectPlan(context, physicalResult);
   }
