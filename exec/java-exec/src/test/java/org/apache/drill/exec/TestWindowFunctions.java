@@ -225,6 +225,32 @@ public class TestWindowFunctions extends BaseTestQuery {
     }
   }
 
+  @Test // DRILL-3344
+  public void testWindowGroupBy() throws Exception {
+    String query = "explain plan for SELECT max(n_nationkey) OVER (), n_name as col2 \n" +
+        "from cp.`tpch/nation.parquet` \n" +
+        "group by n_name";
+
+    parseErrorHelper(query);
+  }
+
+  @Test // DRILL-3346
+  public void testWindowGroupByOnView() throws Exception {
+    try {
+      String createView = "create view testWindowGroupByOnView(a, b) as \n" +
+          "select n_nationkey, n_name from cp.`tpch/nation.parquet`";
+      String query = "explain plan for SELECT max(a) OVER (), b as col2 \n" +
+          "from testWindowGroupByOnView \n" +
+          "group by b";
+
+      test("use dfs_test.tmp");
+      test(createView);
+      parseErrorHelper(query);
+    } finally {
+      test("drop view testWindowGroupByOnView");
+    }
+  }
+
   @Test // DRILL-3188
   public void testWindowFrameEquivalentToDefault() throws Exception {
     final String query1 = "explain plan for select sum(n_nationKey) over(partition by n_nationKey order by n_nationKey) \n" +
@@ -364,6 +390,17 @@ public class TestWindowFunctions extends BaseTestQuery {
         .baselineColumns("rank1")
         .baselineValues(100l)
         .go();
+  }
+
+  @Test // DRILL-3404
+  public void testWindowSumAggIsNotNull() throws Exception {
+    String query = String.format("select count(*) cnt from (select sum ( c1 ) over ( partition by c2 order by c1 asc nulls first ) w_sum from dfs.`%s/window/table_with_nulls.parquet` ) sub_query where w_sum is not null", TEST_RES_PATH);
+    testBuilder()
+      .sqlQuery(query)
+      .ordered()
+      .baselineColumns("cnt")
+      .baselineValues(26l)
+      .build().run();
   }
 
 }
