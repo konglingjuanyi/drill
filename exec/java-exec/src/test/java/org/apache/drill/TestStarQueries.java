@@ -19,8 +19,11 @@ package org.apache.drill;
 
 import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.common.types.TypeProtos;
+import org.apache.drill.common.util.FileUtils;
 import org.apache.drill.common.util.TestTools;
 import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
 
 public class TestStarQueries extends BaseTestQuery{
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(TestStarQueries.class);
@@ -456,4 +459,40 @@ public class TestStarQueries extends BaseTestQuery{
             "            where n2.n_regionkey = r2.r_regionkey)")
         .build().run();
   }
+
+
+  @Test //DRILL-2802
+  public void testSelectPartitionColumnOnly() throws Exception {
+    final String table = FileUtils.getResourceAsFile("/multilevel/parquet").toURI().toString();
+    final String query1 = String.format("select dir0 from dfs_test.`%s` limit 1 ", table);
+
+    final String[] expectedPlan1 = {".*Project.*dir0=\\[\\$0\\]"};
+    final String[] excludedPlan1 = {};
+    PlanTestBase.testPlanMatchingPatterns(query1, expectedPlan1, excludedPlan1);
+
+    final String query2 = String.format("select dir0, dir1 from dfs_test.`%s` limit 1 ", table);
+
+    final String[] expectedPlan2 = {".*Project.*dir0=\\[\\$0\\], dir1=\\[\\$1\\]"};
+    final String[] excludedPlan2 = {};
+    PlanTestBase.testPlanMatchingPatterns(query2, expectedPlan2, excludedPlan2);
+
+  }
+
+  @Test   // DRILL-2053 : column name is case-insensitive when join a CTE with a regluar table.
+  public void testCaseSenJoinCTEWithRegTab() throws Exception {
+    final String query1 = "with a as ( select * from cp.`tpch/nation.parquet` ) select * from a, cp.`tpch/region.parquet` b where a.N_REGIONKEY = b.R_REGIONKEY";
+
+    int actualRecordCount = testSql(query1);
+    int expectedRecordCount = 25;
+    assertEquals(String.format("Received unexpected number of rows in output for query:\n%s\n expected=%d, received=%s",
+        query1, expectedRecordCount, actualRecordCount), expectedRecordCount, actualRecordCount);
+
+    final String query2 = "with a as ( select * from cp.`tpch/nation.parquet` ) select * from a, cp.`tpch/region.parquet` b where a.n_regionkey = b.r_regionkey";
+
+    actualRecordCount = testSql(query2);
+    expectedRecordCount = 25;
+    assertEquals(String.format("Received unexpected number of rows in output for query:\n%s\n expected=%d, received=%s",
+        query2, expectedRecordCount, actualRecordCount), expectedRecordCount, actualRecordCount);
+  }
+
 }
