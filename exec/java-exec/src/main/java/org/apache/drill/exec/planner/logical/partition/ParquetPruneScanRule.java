@@ -15,42 +15,41 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.drill.exec.planner.logical.partition;
 
-package org.apache.drill.exec.planner.sql.logical;
-
+import org.apache.calcite.plan.RelOptRule;
+import org.apache.calcite.plan.RelOptRuleCall;
 import org.apache.drill.exec.ops.OptimizerRulesContext;
+import org.apache.drill.exec.physical.base.FileGroupScan;
 import org.apache.drill.exec.physical.base.GroupScan;
+import org.apache.drill.exec.planner.ParquetPartitionDescriptor;
 import org.apache.drill.exec.planner.PartitionDescriptor;
 import org.apache.drill.exec.planner.logical.DrillFilterRel;
 import org.apache.drill.exec.planner.logical.DrillProjectRel;
 import org.apache.drill.exec.planner.logical.DrillScanRel;
 import org.apache.drill.exec.planner.logical.RelOptHelper;
-import org.apache.drill.exec.planner.logical.partition.PruneScanRule;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
-import org.apache.drill.exec.planner.sql.HivePartitionDescriptor;
-import org.apache.drill.exec.store.StoragePluginOptimizerRule;
-import org.apache.drill.exec.store.hive.HiveScan;
-import org.apache.calcite.plan.RelOptRuleCall;
+import org.apache.drill.exec.store.parquet.ParquetGroupScan;
 
-public abstract class HivePushPartitionFilterIntoScan {
+public class ParquetPruneScanRule {
 
-  public static final StoragePluginOptimizerRule getFilterOnProject(OptimizerRulesContext optimizerRulesContext) {
+  public static final RelOptRule getFilterOnProjectParquet(OptimizerRulesContext optimizerRulesContext) {
     return new PruneScanRule(
         RelOptHelper.some(DrillFilterRel.class, RelOptHelper.some(DrillProjectRel.class, RelOptHelper.any(DrillScanRel.class))),
-        "HivePushPartitionFilterIntoScan:Filter_On_Project_Hive",
+        "PruneScanRule:Filter_On_Project_Parquet",
         optimizerRulesContext) {
 
       @Override
       public PartitionDescriptor getPartitionDescriptor(PlannerSettings settings, DrillScanRel scanRel) {
-        return new HivePartitionDescriptor(settings, scanRel);
+        return new ParquetPartitionDescriptor(settings, scanRel);
       }
 
       @Override
       public boolean matches(RelOptRuleCall call) {
         final DrillScanRel scan = (DrillScanRel) call.rel(2);
         GroupScan groupScan = scan.getGroupScan();
-        // this rule is applicable only for Hive based partition pruning
-        return groupScan instanceof HiveScan && groupScan.supportsPartitionFilterPushdown();
+        // this rule is applicable only for parquet based partition pruning
+        return groupScan instanceof ParquetGroupScan && groupScan.supportsPartitionFilterPushdown();
       }
 
       @Override
@@ -63,22 +62,22 @@ public abstract class HivePushPartitionFilterIntoScan {
     };
   }
 
-  public static final StoragePluginOptimizerRule getFilterOnScan(OptimizerRulesContext optimizerRulesContext) {
+  public static final RelOptRule getFilterOnScanParquet(OptimizerRulesContext optimizerRulesContext) {
     return new PruneScanRule(
         RelOptHelper.some(DrillFilterRel.class, RelOptHelper.any(DrillScanRel.class)),
-        "HivePushPartitionFilterIntoScan:Filter_On_Scan_Hive", optimizerRulesContext) {
+        "PruneScanRule:Filter_On_Scan_Parquet", optimizerRulesContext) {
 
       @Override
       public PartitionDescriptor getPartitionDescriptor(PlannerSettings settings, DrillScanRel scanRel) {
-        return new HivePartitionDescriptor(settings, scanRel);
+        return new ParquetPartitionDescriptor(settings, scanRel);
       }
 
       @Override
       public boolean matches(RelOptRuleCall call) {
         final DrillScanRel scan = (DrillScanRel) call.rel(1);
         GroupScan groupScan = scan.getGroupScan();
-        // this rule is applicable only for Hive based partition pruning
-        return groupScan instanceof HiveScan && groupScan.supportsPartitionFilterPushdown();
+        // this rule is applicable only for parquet based partition pruning
+        return groupScan instanceof ParquetGroupScan && groupScan.supportsPartitionFilterPushdown();
       }
 
       @Override
