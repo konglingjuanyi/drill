@@ -52,7 +52,7 @@ import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
 
 public class MongoRecordReader extends AbstractRecordReader {
-  static final Logger logger = LoggerFactory.getLogger(MongoRecordReader.class);
+  private static final Logger logger = LoggerFactory.getLogger(MongoRecordReader.class);
 
   private MongoCollection<Document> collection;
   private MongoCursor<Document> cursor;
@@ -98,7 +98,7 @@ public class MongoRecordReader extends AbstractRecordReader {
     if (!isStarQuery()) {
       for (SchemaPath column : projectedColumns ) {
         String fieldName = column.getRootSegment().getPath();
-        transformed.add(SchemaPath.getSimplePath(fieldName));
+        transformed.add(column);
         this.fields.put(fieldName, Integer.valueOf(1));
       }
     } else {
@@ -187,7 +187,7 @@ public class MongoRecordReader extends AbstractRecordReader {
   }
 
   @Override
-  public void cleanup() {
+  public void close() {
   }
 
 

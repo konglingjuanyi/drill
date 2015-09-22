@@ -89,6 +89,8 @@ class MetaImpl implements Meta {
       return statement.getResultSet();
 
     } catch (Exception e) {
+      // Wrap in RuntimeException because Avatica's abstract method declarations
+      // didn't allow for SQLException!
       throw new DrillRuntimeException("Failure while attempting to get DatabaseMetadata.", e);
     }
 
@@ -155,7 +157,7 @@ class MetaImpl implements Meta {
   }
 
   /**
-   * Implements {@link DatabaseMetaData#getColumns()}.
+   * Implements {@link DatabaseMetaData#getColumns}.
    */
   @Override
   public ResultSet getColumns(String catalog, Pat schemaPattern,

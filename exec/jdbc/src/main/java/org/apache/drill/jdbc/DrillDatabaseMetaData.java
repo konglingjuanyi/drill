@@ -33,10 +33,36 @@ public interface DrillDatabaseMetaData extends DatabaseMetaData {
   //  getURL()
   //  getUserName()
   //  isReadOnly()
-  //  nullsAreSortedHigh()
-  //  nullsAreSortedLow()
-  //  nullsAreSortedAtStart()
-  //  nullsAreSortedAtEnd()
+
+  /**
+   * <strong>Drill</strong>:
+   * Reports that NULL values are sorted high.
+   * @return {@code true}
+   */
+  public boolean nullsAreSortedHigh() throws SQLException;
+
+  /**
+   * <strong>Drill</strong>:
+   * Reports that NULL values are not sorted low.
+   * @return {@code false}
+   */
+  public boolean nullsAreSortedLow() throws SQLException;
+
+  /**
+   * <strong>Drill</strong>:
+   * Reports that NULL values are not sorted first.
+   * @return {@code false}
+   */
+  public boolean nullsAreSortedAtStart() throws SQLException;
+
+  /**
+   * <strong>Drill</strong>:
+   * Reports that NULL values are not sorted last.
+   * @return {@code false}
+   */
+  public boolean nullsAreSortedAtEnd() throws SQLException;
+
+  // For matching order of java.sql.DatabaseMetaData:
   //  getDatabaseProductName()
   //  getDatabaseProductVersion()
   //  getDriverName()
@@ -53,7 +79,20 @@ public interface DrillDatabaseMetaData extends DatabaseMetaData {
   //  storesUpperCaseQuotedIdentifiers()
   //  storesLowerCaseQuotedIdentifiers()
   //  storesMixedCaseQuotedIdentifiers()
-  //  getIdentifierQuoteString()
+
+
+  // TODO(DRILL-3510):  Update when Drill accepts standard SQL's double quote.
+  /**
+   * <strong>Drill</strong>:
+   * Reports that the SQL identifier quoting character is the back-quote
+   * character ("{@code `}"; Unicode U+0060; "GRAVE ACCENT").
+   * @return "{@code `}"
+   */
+  @Override
+  String getIdentifierQuoteString() throws SQLException;
+
+
+  // For matching order of java.sql.DatabaseMetaData:
   //  getSQLKeywords()
   //  getNumericFunctions()
   //  getStringFunctions()

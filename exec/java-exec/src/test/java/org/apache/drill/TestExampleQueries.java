@@ -17,7 +17,10 @@
  */
 package org.apache.drill;
 
+import static org.apache.drill.TestBuilder.listOf;
 import static org.junit.Assert.assertEquals;
+
+import java.math.BigDecimal;
 
 import org.apache.drill.common.types.TypeProtos;
 import org.apache.drill.common.util.FileUtils;
@@ -25,9 +28,6 @@ import org.apache.drill.common.util.TestTools;
 import org.apache.drill.exec.ExecConstants;
 import org.junit.Ignore;
 import org.junit.Test;
-
-import java.math.BigDecimal;
-import static org.apache.drill.TestBuilder.listOf;
 
 public class TestExampleQueries extends BaseTestQuery {
 //  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(TestExampleQueries.class);
@@ -278,6 +278,7 @@ public class TestExampleQueries extends BaseTestQuery {
   }
 
   @Test
+  @Ignore("DRILL-3774")
   public void testTextPartitions() throws Exception {
     String root = FileUtils.getResourceAsFile("/store/text/data/").toURI().toString();
     String query = String.format("select * from dfs_test.`%s`", root);
@@ -1100,5 +1101,94 @@ public class TestExampleQueries extends BaseTestQuery {
 
     test(query1);
     test(query2);
+  }
+
+  @Test
+  public void testNegativeExtractOperator() throws Exception {
+    String query = "select -EXTRACT(DAY FROM birth_date) as col \n" +
+        "from cp.`employee.json` \n" +
+        "order by col \n" +
+        "limit 5";
+
+    testBuilder()
+        .sqlQuery(query)
+        .ordered()
+        .baselineColumns("col")
+        .baselineValues(-27l)
+        .baselineValues(-27l)
+        .baselineValues(-27l)
+        .baselineValues(-26l)
+        .baselineValues(-26l)
+        .build()
+        .run();
+  }
+
+  @Test // see DRILL-2313
+  public void testDistinctOverAggFunctionWithGroupBy() throws Exception {
+    String query1 = "select distinct count(distinct n_nationkey) as col from cp.`tpch/nation.parquet` group by n_regionkey order by 1";
+    String query2 = "select distinct count(distinct n_nationkey) as col from cp.`tpch/nation.parquet` group by n_regionkey order by count(distinct n_nationkey)";
+    String query3 = "select distinct sum(n_nationkey) as col from cp.`tpch/nation.parquet` group by n_regionkey order by 1";
+    String query4 = "select distinct sum(n_nationkey) as col from cp.`tpch/nation.parquet` group by n_regionkey order by col";
+
+    testBuilder()
+        .sqlQuery(query1)
+        .unOrdered()
+        .baselineColumns("col")
+        .baselineValues((long) 5)
+        .build()
+        .run();
+
+    testBuilder()
+        .sqlQuery(query2)
+        .unOrdered()
+        .baselineColumns("col")
+        .baselineValues((long) 5)
+        .build()
+        .run();
+
+    testBuilder()
+        .sqlQuery(query3)
+        .ordered()
+        .baselineColumns("col")
+        .baselineValues((long) 47)
+        .baselineValues((long) 50)
+        .baselineValues((long) 58)
+        .baselineValues((long) 68)
+        .baselineValues((long) 77)
+        .build()
+        .run();
+
+    testBuilder()
+        .sqlQuery(query4)
+        .ordered()
+        .baselineColumns("col")
+        .baselineValues((long) 47)
+        .baselineValues((long) 50)
+        .baselineValues((long) 58)
+        .baselineValues((long) 68)
+        .baselineValues((long) 77)
+        .build()
+        .run();
+  }
+
+  @Test // DRILL-2190
+  public void testDateImplicitCasting() throws Exception {
+    String query = "SELECT birth_date \n" +
+        "FROM cp.`employee.json` \n" +
+        "WHERE birth_date BETWEEN '1920-01-01' AND cast('1931-01-01' AS DATE) \n" +
+        "order by birth_date";
+
+    testBuilder()
+        .sqlQuery(query)
+        .unOrdered()
+        .baselineColumns("birth_date")
+        .baselineValues("1920-04-17")
+        .baselineValues("1921-12-04")
+        .baselineValues("1922-08-10")
+        .baselineValues("1926-10-27")
+        .baselineValues("1928-03-20")
+        .baselineValues("1930-01-08")
+        .build()
+        .run();
   }
 }

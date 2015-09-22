@@ -21,17 +21,22 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+import org.apache.calcite.plan.RelOptRule;
+import org.apache.calcite.plan.volcano.AbstractConverter.ExpandConversionRule;
+import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.rules.AggregateExpandDistinctAggregatesRule;
 import org.apache.calcite.rel.rules.AggregateRemoveRule;
+import org.apache.calcite.rel.rules.FilterAggregateTransposeRule;
+import org.apache.calcite.rel.rules.FilterMergeRule;
 import org.apache.calcite.rel.rules.FilterSetOpTransposeRule;
+import org.apache.calcite.rel.rules.JoinPushExpressionsRule;
 import org.apache.calcite.rel.rules.JoinPushThroughJoinRule;
 import org.apache.calcite.rel.rules.ProjectRemoveRule;
+import org.apache.calcite.rel.rules.ProjectWindowTransposeRule;
 import org.apache.calcite.rel.rules.ReduceExpressionsRule;
 import org.apache.calcite.rel.rules.SortRemoveRule;
 import org.apache.calcite.rel.rules.UnionToDistinctRule;
 import org.apache.calcite.tools.RuleSet;
-
-import org.apache.calcite.rel.rules.FilterMergeRule;
 import org.apache.drill.exec.ops.OptimizerRulesContext;
 import org.apache.drill.exec.planner.logical.partition.ParquetPruneScanRule;
 import org.apache.drill.exec.planner.logical.partition.PruneScanRule;
@@ -50,13 +55,10 @@ import org.apache.drill.exec.planner.physical.ScreenPrule;
 import org.apache.drill.exec.planner.physical.SortConvertPrule;
 import org.apache.drill.exec.planner.physical.SortPrule;
 import org.apache.drill.exec.planner.physical.StreamAggPrule;
+import org.apache.drill.exec.planner.physical.UnionAllPrule;
 import org.apache.drill.exec.planner.physical.ValuesPrule;
 import org.apache.drill.exec.planner.physical.WindowPrule;
-import org.apache.drill.exec.planner.physical.UnionAllPrule;
 import org.apache.drill.exec.planner.physical.WriterPrule;
-import org.apache.calcite.rel.core.RelFactories;
-import org.apache.calcite.plan.RelOptRule;
-import org.apache.calcite.plan.volcano.AbstractConverter.ExpandConversionRule;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSet.Builder;
@@ -106,6 +108,7 @@ public class DrillRuleSets {
       // Add support for WHERE style joins.
       DrillFilterJoinRules.DRILL_FILTER_ON_JOIN,
       DrillFilterJoinRules.DRILL_JOIN,
+      JoinPushExpressionsRule.INSTANCE,
       // End support for WHERE style joins.
 
       /*
@@ -113,13 +116,14 @@ public class DrillRuleSets {
        */
       DrillPushFilterPastProjectRule.INSTANCE,
       FilterSetOpTransposeRule.INSTANCE,
+      FilterAggregateTransposeRule.INSTANCE,
 
       FilterMergeRule.INSTANCE,
       AggregateRemoveRule.INSTANCE,
-      ProjectRemoveRule.NAME_CALC_INSTANCE,
+      ProjectRemoveRule.INSTANCE,
       SortRemoveRule.INSTANCE,
 
-      AggregateExpandDistinctAggregatesRule.INSTANCE,
+      AggregateExpandDistinctAggregatesRule.JOIN,
       DrillReduceAggregatesRule.INSTANCE,
 
       /*
@@ -129,6 +133,7 @@ public class DrillRuleSets {
       DrillPushProjectPastJoinRule.INSTANCE,
       DrillPushProjIntoScan.INSTANCE,
       DrillProjectSetOpTransposeRule.INSTANCE,
+      ProjectWindowTransposeRule.INSTANCE,
 
       /*
        Convert from Calcite Logical to Drill Logical Rules.

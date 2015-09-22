@@ -17,6 +17,8 @@
  */
 package org.apache.drill.jdbc.impl;
 
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
@@ -76,6 +78,13 @@ class DrillDatabaseMetaDataImpl extends AvaticaDatabaseMetaData
   public boolean nullsAreSortedAtEnd() throws SQLException {
     checkNotClosed();
     return false;
+  }
+
+  // TODO(DRILL-3510):  Update when Drill accepts standard SQL's double quote.
+  @Override
+  public String getIdentifierQuoteString() throws SQLException {
+    checkNotClosed();
+    return "`";
   }
 
 

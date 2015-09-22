@@ -23,12 +23,16 @@ import java.util.List;
 import com.google.common.collect.Lists;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.logical.LogicalCalc;
+import org.apache.calcite.rel.rules.ProjectRemoveRule;
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.sql.validate.SqlValidatorUtil;
 import org.apache.calcite.util.Pair;
 import org.apache.drill.common.types.TypeProtos;
 import org.apache.drill.common.types.Types;
@@ -114,5 +118,55 @@ public abstract class DrillRelOptUtil {
         };
 
     return RelOptUtil.createProject(rel, refs, fieldNames, false);
+  }
+
+  public static boolean isTrivialProject(Project project, boolean useNamesInIdentityProjCalc) {
+    if (!useNamesInIdentityProjCalc) {
+      return ProjectRemoveRule.isTrivial(project);
+    }  else {
+      return containIdentity(project.getProjects(), project.getRowType(), project.getInput().getRowType());
+    }
+  }
+
+  /** Returns a rowType having all unique field name.
+   *
+   * @param rowType : input rowType
+   * @param typeFactory : type factory used to create a new row type.
+   * @return
+   */
+  public static RelDataType uniqifyFieldName(final RelDataType rowType, final RelDataTypeFactory typeFactory) {
+    return typeFactory.createStructType(RelOptUtil.getFieldTypeList(rowType),
+        SqlValidatorUtil.uniquify(rowType.getFieldNames()));
+  }
+
+  /**
+   * Returns whether the leading edge of a given array of expressions is
+   * wholly {@link RexInputRef} objects with types and names corresponding
+   * to the underlying row type. */
+  private static boolean containIdentity(List<? extends RexNode> exps,
+                                        RelDataType rowType, RelDataType childRowType) {
+    List<RelDataTypeField> fields = rowType.getFieldList();
+    List<RelDataTypeField> childFields = childRowType.getFieldList();
+    int fieldCount = childFields.size();
+    if (exps.size() != fieldCount) {
+      return false;
+    }
+    for (int i = 0; i < exps.size(); i++) {
+      RexNode exp = exps.get(i);
+      if (!(exp instanceof RexInputRef)) {
+        return false;
+      }
+      RexInputRef var = (RexInputRef) exp;
+      if (var.getIndex() != i) {
+        return false;
+      }
+      if (!fields.get(i).getName().equals(childFields.get(i).getName())) {
+        return false;
+      }
+      if (!fields.get(i).getType().equals(childFields.get(i).getType())) {
+        return false;
+      }
+    }
+    return true;
   }
 }

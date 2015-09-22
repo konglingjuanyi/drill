@@ -217,13 +217,16 @@ public class ParquetFormatPlugin implements FormatPlugin{
           return true;
         } else {
 
+          if (fs.exists(new Path(dir.getPath(), Metadata.METADATA_FILENAME))) {
+            return true;
+          }
           PathFilter filter = new DrillPathFilter();
 
           FileStatus[] files = fs.listStatus(dir.getPath(), filter);
           if (files.length == 0) {
             return false;
           }
-          return super.isReadable(fs, files[0]);
+          return super.isFileReadable(fs, files[0]);
         }
       } catch (IOException e) {
         logger.info("Failure while attempting to check for Parquet metadata file.", e);
