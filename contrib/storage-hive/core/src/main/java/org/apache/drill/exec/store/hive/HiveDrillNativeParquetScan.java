@@ -28,6 +28,7 @@ import org.apache.drill.exec.physical.base.PhysicalOperator;
 import org.apache.drill.exec.physical.base.ScanStats;
 import org.apache.drill.exec.physical.base.SubScan;
 import org.apache.drill.exec.store.StoragePluginRegistry;
+import org.apache.drill.exec.store.hive.HiveTable.HivePartition;
 
 import java.io.IOException;
 import java.util.List;
@@ -48,8 +49,8 @@ public class HiveDrillNativeParquetScan extends HiveScan {
   }
 
   public HiveDrillNativeParquetScan(String userName, HiveReadEntry hiveReadEntry, HiveStoragePlugin storagePlugin,
-      List<SchemaPath> columns) throws ExecutionSetupException {
-    super(userName, hiveReadEntry, storagePlugin, columns);
+      List<SchemaPath> columns, HiveMetadataProvider metadataProvider) throws ExecutionSetupException {
+    super(userName, hiveReadEntry, storagePlugin, columns, metadataProvider);
   }
 
   public HiveDrillNativeParquetScan(final HiveScan hiveScan) {
@@ -90,7 +91,7 @@ public class HiveDrillNativeParquetScan extends HiveScan {
 
   @Override
   public HiveScan clone(HiveReadEntry hiveReadEntry) throws ExecutionSetupException {
-    return new HiveDrillNativeParquetScan(getUserName(), hiveReadEntry, storagePlugin, columns);
+    return new HiveDrillNativeParquetScan(getUserName(), hiveReadEntry, storagePlugin, columns, metadataProvider);
   }
 
   @Override
@@ -102,9 +103,12 @@ public class HiveDrillNativeParquetScan extends HiveScan {
 
   @Override
   public String toString() {
+    final List<HivePartition> partitions = hiveReadEntry.getHivePartitionWrappers();
+    int numPartitions = partitions == null ? 0 : partitions.size();
     return "HiveDrillNativeParquetScan [table=" + hiveReadEntry.getHiveTableWrapper()
-        + ", inputSplits=" + inputSplits
         + ", columns=" + columns
-        + ", partitions= " + hiveReadEntry.getHivePartitionWrappers() +"]";
+        + ", numPartitions=" + numPartitions
+        + ", partitions= " + partitions
+        + ", inputDirectories=" + metadataProvider.getInputDirectories(hiveReadEntry) + "]";
   }
 }

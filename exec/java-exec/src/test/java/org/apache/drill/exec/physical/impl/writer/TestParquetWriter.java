@@ -17,23 +17,37 @@
  */
 package org.apache.drill.exec.physical.impl.writer;
 
+import static org.apache.drill.exec.store.parquet.ParquetRecordWriter.DRILL_VERSION_PROPERTY;
+import static org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS;
+import static org.junit.Assert.assertEquals;
+
 import java.io.File;
 import java.io.FileWriter;
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.sql.Date;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
+import com.google.common.base.Joiner;
 import org.apache.drill.BaseTestQuery;
+import org.apache.drill.common.util.DrillVersionInfo;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.fn.interp.TestConstantFolding;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
+import org.apache.drill.exec.store.parquet.ParquetRecordWriter;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.parquet.format.converter.ParquetMetadataConverter;
+import org.apache.parquet.format.converter.ParquetMetadataConverter.MetadataFilter;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.joda.time.DateTime;
 import org.joda.time.Period;
 import org.junit.AfterClass;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Rule;
@@ -46,6 +60,49 @@ public class TestParquetWriter extends BaseTestQuery {
   @Rule
   public TemporaryFolder folder = new TemporaryFolder();
   static FileSystem fs;
+
+  // Map storing a convenient name as well as the cast type necessary
+  // to produce it casting from a varchar
+  private static final Map<String, String> allTypes = new HashMap<>();
+
+  // Select statement for all supported Drill types, for use in conjunction with
+  // the file parquet/alltypes.json in the resources directory
+  private static final String allTypesSelection;
+
+  static {
+    allTypes.put("int",                "int");
+    allTypes.put("bigint",             "bigint");
+    // TODO(DRILL-3367)
+//    allTypes.put("decimal(9, 4)",      "decimal9");
+//    allTypes.put("decimal(18,9)",      "decimal18");
+//    allTypes.put("decimal(28, 14)",    "decimal28sparse");
+//    allTypes.put("decimal(38, 19)",    "decimal38sparse");
+    allTypes.put("date",               "date");
+    allTypes.put("timestamp",          "timestamp");
+    allTypes.put("float",              "float4");
+    allTypes.put("double",             "float8");
+    allTypes.put("varbinary(65000)",   "varbinary");
+    // TODO(DRILL-2297)
+//    allTypes.put("interval year",      "intervalyear");
+    allTypes.put("interval day",       "intervalday");
+    allTypes.put("boolean",            "bit");
+    allTypes.put("varchar",            "varchar");
+    allTypes.put("time",               "time");
+
+    List<String> allTypeSelectsAndCasts = new ArrayList<>();
+    for (String s : allTypes.keySet()) {
+      // don't need to cast a varchar, just add the column reference
+      if (s.equals("varchar")) {
+        allTypeSelectsAndCasts.add(String.format("`%s_col`", allTypes.get(s)));
+        continue;
+      }
+      allTypeSelectsAndCasts.add(String.format("cast(`%s_col` AS %S) `%s_col`", allTypes.get(s), s, allTypes.get(s)));
+    }
+    allTypesSelection = Joiner.on(",").join(allTypeSelectsAndCasts);
+  }
+
+
+  private String allTypesTable = "cp.`/parquet/alltypes.json`";
 
   @BeforeClass
   public static void initFs() throws Exception {
@@ -61,6 +118,12 @@ public class TestParquetWriter extends BaseTestQuery {
     test(String.format("alter session set `%s` = false", PlannerSettings.ENABLE_DECIMAL_DATA_TYPE_KEY));
   }
 
+  @Test
+  public void testSmallFileValueReadWrite() throws Exception {
+    String selection = "key";
+    String inputTable = "cp.`/store/json/intData.json`";
+    runTestAndValidate(selection, selection, inputTable, "smallFileTest");
+  }
 
   @Test
   public void testSimple() throws Exception {
@@ -100,6 +163,53 @@ public class TestParquetWriter extends BaseTestQuery {
         .baselineColumns(colNames)
         .baselineValues(values)
         .build().run();
+  }
+
+  @Test
+  public void testAllScalarTypes() throws Exception {
+    /// read once with the flat reader
+    runTestAndValidate(allTypesSelection, "*", allTypesTable, "donuts_json");
+
+    try {
+      // read all of the types with the complex reader
+      test(String.format("alter session set %s = true", ExecConstants.PARQUET_NEW_RECORD_READER));
+      runTestAndValidate(allTypesSelection, "*", allTypesTable, "donuts_json");
+    } finally {
+      test(String.format("alter session set %s = false", ExecConstants.PARQUET_NEW_RECORD_READER));
+    }
+  }
+
+  @Test
+  public void testAllScalarTypesDictionary() throws Exception {
+    try {
+      test(String.format("alter session set %s = true", ExecConstants.PARQUET_WRITER_ENABLE_DICTIONARY_ENCODING));
+      /// read once with the flat reader
+      runTestAndValidate(allTypesSelection, "*", allTypesTable, "donuts_json");
+
+      // read all of the types with the complex reader
+      test(String.format("alter session set %s = true", ExecConstants.PARQUET_NEW_RECORD_READER));
+      runTestAndValidate(allTypesSelection, "*", allTypesTable, "donuts_json");
+    } finally {
+      test(String.format("alter session set %s = false", ExecConstants.PARQUET_WRITER_ENABLE_DICTIONARY_ENCODING));
+    }
+  }
+
+  @Test
+  public void testDictionaryError() throws Exception {
+    compareParquetReadersColumnar("*", "cp.`parquet/required_dictionary.parquet`");
+    runTestAndValidate("*", "*", "cp.`parquet/required_dictionary.parquet`", "required_dictionary");
+  }
+
+  @Test
+  public void testDictionaryEncoding() throws Exception {
+    String selection = "type";
+    String inputTable = "cp.`donuts.json`";
+    try {
+      test(String.format("alter session set %s = true", ExecConstants.PARQUET_WRITER_ENABLE_DICTIONARY_ENCODING));
+      runTestAndValidate(selection, selection, inputTable, "donuts_json");
+    } finally {
+      test(String.format("alter session set %s = false", ExecConstants.PARQUET_WRITER_ENABLE_DICTIONARY_ENCODING));
+    }
   }
 
   @Test
@@ -601,6 +711,7 @@ public class TestParquetWriter extends BaseTestQuery {
 
   public void runTestAndValidate(String selection, String validationSelection, String inputTable, String outputFile) throws Exception {
     try {
+      deleteTableIfExists(outputFile);
       test("use dfs_test.tmp");
   //    test("ALTER SESSION SET `planner.add_producer_consumer` = false");
       String query = String.format("SELECT %s FROM %s", selection, inputTable);
@@ -614,6 +725,14 @@ public class TestParquetWriter extends BaseTestQuery {
           .sqlBaselineQuery(validateQuery)
           .go();
 
+      Configuration hadoopConf = new Configuration();
+      Path output = new Path(getDfsTestTmpSchemaLocation(), outputFile);
+      FileSystem fs = output.getFileSystem(hadoopConf);
+      for (FileStatus file : fs.listStatus(output)) {
+        ParquetMetadata footer = ParquetFileReader.readFooter(hadoopConf, file, SKIP_ROW_GROUPS);
+        String version = footer.getFileMetaData().getKeyValueMetaData().get(DRILL_VERSION_PROPERTY);
+        assertEquals(DrillVersionInfo.getVersion(), version);
+      }
     } finally {
       deleteTableIfExists(outputFile);
     }

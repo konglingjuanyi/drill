@@ -38,8 +38,8 @@ import org.apache.drill.exec.physical.base.ScanStats;
 import org.apache.drill.exec.physical.base.ScanStats.GroupScanProperty;
 import org.apache.drill.exec.physical.impl.ScanBatch;
 import org.apache.drill.exec.physical.impl.WriterRecordBatch;
-import org.apache.drill.exec.record.CloseableRecordBatch;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
+import org.apache.drill.exec.record.CloseableRecordBatch;
 import org.apache.drill.exec.record.RecordBatch;
 import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.store.AbstractRecordReader;
@@ -53,11 +53,10 @@ import org.apache.drill.exec.store.dfs.FormatMatcher;
 import org.apache.drill.exec.store.dfs.FormatPlugin;
 import org.apache.drill.exec.store.schedule.CompleteFileWork;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
-
-import org.apache.hadoop.fs.Path;
 
 public abstract class EasyFormatPlugin<T extends FormatPluginConfig> implements FormatPlugin {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(EasyFormatPlugin.class);
@@ -123,7 +122,7 @@ public abstract class EasyFormatPlugin<T extends FormatPluginConfig> implements 
   }
 
   public abstract RecordReader getRecordReader(FragmentContext context, DrillFileSystem dfs, FileWork fileWork,
-      List<SchemaPath> columns) throws ExecutionSetupException;
+      List<SchemaPath> columns, String userName) throws ExecutionSetupException;
 
   CloseableRecordBatch getReaderBatch(FragmentContext context, EasySubScan scan) throws ExecutionSetupException {
     String partitionDesignator = context.getOptions()
@@ -161,10 +160,7 @@ public abstract class EasyFormatPlugin<T extends FormatPluginConfig> implements 
     }
 
     int numParts = 0;
-    OperatorContext oContext = context.newOperatorContext(scan, false /*
-                                                                       * ScanBatch is not subject to fragment memory
-                                                                       * limit
-                                                                       */);
+    OperatorContext oContext = context.newOperatorContext(scan);
     final DrillFileSystem dfs;
     try {
       dfs = oContext.newFileSystem(fsConf);
@@ -173,7 +169,7 @@ public abstract class EasyFormatPlugin<T extends FormatPluginConfig> implements 
     }
 
     for(FileWork work : scan.getWorkUnits()){
-      readers.add(getRecordReader(context, dfs, work, scan.getColumns()));
+      readers.add(getRecordReader(context, dfs, work, scan.getColumns(), scan.getUserName()));
       if (scan.getSelectionRoot() != null) {
         String[] r = Path.getPathWithoutSchemeAndAuthority(new Path(scan.getSelectionRoot())).toString().split("/");
         String[] p = Path.getPathWithoutSchemeAndAuthority(new Path(work.getPath())).toString().split("/");

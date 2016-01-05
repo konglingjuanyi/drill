@@ -29,8 +29,9 @@ import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.types.TypeProtos.DataMode;
 import org.apache.drill.common.types.TypeProtos.MinorType;
+import org.apache.drill.common.util.DrillVersionInfo;
 import org.apache.drill.exec.ExecConstants;
-import org.apache.drill.exec.memory.OutOfMemoryException;
+import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.ops.OperatorContext;
 import org.apache.drill.exec.planner.physical.WriterPrel;
@@ -43,30 +44,29 @@ import org.apache.drill.exec.store.EventBasedRecordWriter;
 import org.apache.drill.exec.store.EventBasedRecordWriter.FieldConverter;
 import org.apache.drill.exec.store.ParquetOutputRecordWriter;
 import org.apache.drill.exec.vector.BitVector;
-import org.apache.drill.exec.vector.IntVector;
 import org.apache.drill.exec.vector.complex.reader.FieldReader;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-
-import parquet.column.ColumnWriteStore;
-import parquet.column.ParquetProperties.WriterVersion;
-import parquet.column.impl.ColumnWriteStoreV1;
-import parquet.column.page.PageWriteStore;
-import parquet.hadoop.ColumnChunkPageWriteStoreExposer;
-import parquet.hadoop.ParquetFileWriter;
-import parquet.hadoop.metadata.CompressionCodecName;
-import parquet.io.ColumnIOFactory;
-import parquet.io.MessageColumnIO;
-import parquet.io.api.RecordConsumer;
-import parquet.schema.DecimalMetadata;
-import parquet.schema.GroupType;
-import parquet.schema.MessageType;
-import parquet.schema.OriginalType;
-import parquet.schema.PrimitiveType;
-import parquet.schema.PrimitiveType.PrimitiveTypeName;
-import parquet.schema.Type;
-import parquet.schema.Type.Repetition;
+import org.apache.parquet.column.ColumnWriteStore;
+import org.apache.parquet.column.ParquetProperties.WriterVersion;
+import org.apache.parquet.column.impl.ColumnWriteStoreV1;
+import org.apache.parquet.column.page.PageWriteStore;
+import org.apache.parquet.hadoop.CodecFactory;
+import org.apache.parquet.hadoop.ColumnChunkPageWriteStoreExposer;
+import org.apache.parquet.hadoop.ParquetFileWriter;
+import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.io.ColumnIOFactory;
+import org.apache.parquet.io.MessageColumnIO;
+import org.apache.parquet.io.api.RecordConsumer;
+import org.apache.parquet.schema.DecimalMetadata;
+import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.OriginalType;
+import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.apache.parquet.schema.Type;
+import org.apache.parquet.schema.Type.Repetition;
 
 import com.google.common.collect.Lists;
 
@@ -77,6 +77,8 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
   private static final int MINIMUM_RECORD_COUNT_FOR_CHECK = 100;
   private static final int MAXIMUM_RECORD_COUNT_FOR_CHECK = 10000;
 
+  public static final String DRILL_VERSION_PROPERTY = "drill.version";
+
   private ParquetFileWriter parquetFileWriter;
   private MessageType schema;
   private Map<String, String> extraMetaData = new HashMap<>();
@@ -86,7 +88,7 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
   private boolean enableDictionary = false;
   private CompressionCodecName codec = CompressionCodecName.SNAPPY;
   private WriterVersion writerVersion = WriterVersion.PARQUET_1_0;
-  private DirectCodecFactory codecFactory;
+  private CodecFactory codecFactory;
 
   private long recordCount = 0;
   private long recordCountForNextMemCheck = MINIMUM_RECORD_COUNT_FOR_CHECK;
@@ -107,10 +109,12 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
 
   public ParquetRecordWriter(FragmentContext context, ParquetWriter writer) throws OutOfMemoryException{
     super();
-    this.oContext = context.newOperatorContext(writer, true);
-    this.codecFactory = new DirectCodecFactory(writer.getFormatPlugin().getFsConf(), oContext.getAllocator());
+    this.oContext = context.newOperatorContext(writer);
+    this.codecFactory = CodecFactory.createDirectCodecFactory(writer.getFormatPlugin().getFsConf(),
+        new ParquetDirectByteBufferAllocator(oContext.getAllocator()), pageSize);
     this.partitionColumns = writer.getPartitionColumns();
     this.hasPartitions = partitionColumns != null && partitionColumns.size() > 0;
+    this.extraMetaData.put(DRILL_VERSION_PROPERTY, DrillVersionInfo.getVersion());
   }
 
   @Override
@@ -186,11 +190,11 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
 
     int initialBlockBufferSize = max(MINIMUM_BUFFER_SIZE, blockSize / this.schema.getColumns().size() / 5);
     pageStore = ColumnChunkPageWriteStoreExposer.newColumnChunkPageWriteStore(this.oContext,
-        codecFactory.getCompressor(codec, pageSize),
-        schema,
-        initialBlockBufferSize);
+        codecFactory.getCompressor(codec),
+        schema);
     int initialPageBufferSize = max(MINIMUM_BUFFER_SIZE, min(pageSize + pageSize / 10, initialBlockBufferSize));
-    store = new ColumnWriteStoreV1(pageStore, pageSize, initialPageBufferSize, dictionaryPageSize, enableDictionary, writerVersion);
+    store = new ColumnWriteStoreV1(pageStore, pageSize, initialPageBufferSize, enableDictionary,
+        writerVersion, new ParquetDirectByteBufferAllocator(oContext));
     MessageColumnIO columnIO = new ColumnIOFactory(false).getColumnIO(this.schema);
     consumer = columnIO.getRecordWriter(store);
     setUp(schema, consumer);
@@ -207,12 +211,12 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
     return new PrimitiveType(repetition, primitiveTypeName, length, name, originalType, decimalMetadata, null);
   }
 
-  private parquet.schema.Type getType(MaterializedField field) {
+  private Type getType(MaterializedField field) {
     MinorType minorType = field.getType().getMinorType();
     DataMode dataMode = field.getType().getMode();
     switch(minorType) {
       case MAP:
-        List<parquet.schema.Type> types = Lists.newArrayList();
+        List<Type> types = Lists.newArrayList();
         for (MaterializedField childField : field.getChildren()) {
           types.add(getType(childField));
         }
@@ -243,6 +247,7 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
   private void flush() throws IOException {
     if (recordCount > 0) {
       parquetFileWriter.startBlock(recordCount);
+      consumer.flush();
       store.flush();
       ColumnChunkPageWriteStoreExposer.flushPageStore(pageStore, parquetFileWriter);
       recordCount = 0;
@@ -254,7 +259,9 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
     }
 
     store.close();
-    ColumnChunkPageWriteStoreExposer.close(pageStore);
+    // TODO(jaltekruse) - review this close method should no longer be necessary
+//    ColumnChunkPageWriteStoreExposer.close(pageStore);
+
     store = null;
     pageStore = null;
     index++;
@@ -371,6 +378,6 @@ public class ParquetRecordWriter extends ParquetOutputRecordWriter {
   public void cleanup() throws IOException {
     flush();
 
-    codecFactory.close();
+    codecFactory.release();
   }
 }

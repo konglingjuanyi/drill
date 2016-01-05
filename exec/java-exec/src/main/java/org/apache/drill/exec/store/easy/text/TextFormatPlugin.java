@@ -59,6 +59,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 
 public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextFormatConfig> {
@@ -78,7 +79,7 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
 
   @Override
   public RecordReader getRecordReader(FragmentContext context, DrillFileSystem dfs, FileWork fileWork,
-      List<SchemaPath> columns) throws ExecutionSetupException {
+      List<SchemaPath> columns, String userName) throws ExecutionSetupException {
     Path path = dfs.makeQualified(new Path(fileWork.getPath()));
     FileSplit split = new FileSplit(path, fileWork.getStart(), fileWork.getLength(), new String[]{""});
 
@@ -133,14 +134,14 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
   @JsonTypeName("text") @JsonInclude(Include.NON_DEFAULT)
   public static class TextFormatConfig implements FormatPluginConfig {
 
-    public List<String> extensions;
+    public List<String> extensions = ImmutableList.of();
     public String lineDelimiter = "\n";
     public char fieldDelimiter = '\n';
     public char quote = '"';
     public char escape = '"';
     public char comment = '#';
     public boolean skipFirstLine = false;
-
+    public boolean extractHeader = false;
 
     public List<String> getExtensions() {
       return extensions;
@@ -164,6 +165,11 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
 
     public char getFieldDelimiter() {
       return fieldDelimiter;
+    }
+
+    @JsonIgnore
+    public boolean isHeaderExtractionEnabled() {
+      return extractHeader;
     }
 
     @JsonIgnore

@@ -21,9 +21,11 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.google.common.base.Stopwatch;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.common.expression.SchemaPath;
@@ -41,12 +43,12 @@ import org.apache.drill.exec.store.parquet.columnreaders.ParquetRecordReader;
 import org.apache.drill.exec.store.parquet2.DrillParquetReader;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-
-import parquet.column.ColumnDescriptor;
-import parquet.hadoop.ParquetFileReader;
-import parquet.hadoop.metadata.ParquetMetadata;
-import parquet.schema.MessageType;
-import parquet.schema.Type;
+import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.hadoop.CodecFactory;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.Type;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
@@ -67,10 +69,7 @@ public class ParquetScanBatchCreator implements BatchCreator<ParquetRowGroupScan
       .getOption(ExecConstants.FILESYSTEM_PARTITION_COLUMN_LABEL).string_val;
     List<SchemaPath> columns = rowGroupScan.getColumns();
     List<RecordReader> readers = Lists.newArrayList();
-    OperatorContext oContext = context.newOperatorContext(rowGroupScan, false /*
-                                                                               * ScanBatch is not subject to fragment
-                                                                               * memory limit
-                                                                               */);
+    OperatorContext oContext = context.newOperatorContext(rowGroupScan);
 
     List<String[]> partitionColumns = Lists.newArrayList();
     List<Integer> selectedPartitionColumns = Lists.newArrayList();
@@ -121,15 +120,21 @@ public class ParquetScanBatchCreator implements BatchCreator<ParquetRowGroupScan
       These fields will be added to the constructor below
       */
       try {
+        Stopwatch timer = new Stopwatch();
         if ( ! footers.containsKey(e.getPath())){
-          footers.put(e.getPath(),
-              ParquetFileReader.readFooter(conf, new Path(e.getPath())));
+          timer.start();
+          ParquetMetadata footer = ParquetFileReader.readFooter(conf, new Path(e.getPath()));
+          long timeToRead = timer.elapsed(TimeUnit.MICROSECONDS);
+          logger.trace("ParquetTrace,Read Footer,{},{},{},{},{},{},{}", "", e.getPath(), "", 0, 0, 0, timeToRead);
+          footers.put(e.getPath(), footer );
         }
         if (!context.getOptions().getOption(ExecConstants.PARQUET_NEW_RECORD_READER).bool_val && !isComplex(footers.get(e.getPath()))) {
           readers.add(
               new ParquetRecordReader(
                   context, e.getPath(), e.getRowGroupIndex(), fs,
-                  new DirectCodecFactory(fs.getConf(), oContext.getAllocator()),
+                  CodecFactory.createDirectCodecFactory(
+                  fs.getConf(),
+                  new ParquetDirectByteBufferAllocator(oContext.getAllocator()), 0),
                   footers.get(e.getPath()),
                   rowGroupScan.getColumns()
               )

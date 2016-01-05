@@ -295,5 +295,36 @@ public class TestPartitionFilter extends PlanTestBase {
     testExcludeFilter(query, 1, "Filter", 1);
   }
 
+  // Coalesce filter is on the non directory column. DRILL-4071
+  @Test
+  public void testPartitionWithCoalesceFilter_1() throws Exception {
+    String query = String.format("select 1 from dfs_test.`%s/multilevel/parquet` where dir0=1994 and dir1='Q1' and coalesce(o_custkey, 0) = 890", TEST_RES_PATH);
+    testIncludeFilter(query, 1, "Filter", 1);
+  }
+
+  // Coalesce filter is on the directory column
+  @Test
+  public void testPartitionWithCoalesceFilter_2() throws Exception {
+    String query = String.format("select 1 from dfs_test.`%s/multilevel/parquet` where dir0=1994 and o_custkey = 890 and coalesce(dir1, 'NA') = 'Q1'", TEST_RES_PATH);
+    testIncludeFilter(query, 1, "Filter", 1);
+  }
+
+  @Test  //DRILL-4021: Json with complex type and nested flatten functions: dir0 and dir1 filters plus filter involves filter refering to output from nested flatten functions.
+  public void testPartitionFilter_Json_WithFlatten() throws Exception {
+    // this query expects to have the partition filter pushded.
+    // With partition pruning, we will end with one file, and one row returned from the query.
+    final String query = String.format(
+        " select dir0, dir1, o_custkey, o_orderdate, provider from " +
+        "   ( select dir0, dir1, o_custkey, o_orderdate, flatten(items['providers']) as provider " +
+            " from (" +
+            "   select dir0, dir1, o_custkey, o_orderdate, flatten(o_items) items " +
+            "     from dfs_test.`%s/multilevel/jsoncomplex`) ) " +
+            " where dir0=1995 " +   // should be pushed down and used as partitioning filter
+            "   and dir1='Q1' " +   // should be pushed down and used as partitioning filter
+            "   and provider = 'BestBuy'", // should NOT be pushed down.
+        TEST_RES_PATH);
+
+    testIncludeFilter(query, 1, "Filter", 1);
+  }
 
 }

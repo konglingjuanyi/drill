@@ -236,41 +236,39 @@ public class StoragePluginRegistry implements Iterable<Map.Entry<String, Storage
   }
 
   public StoragePlugin createOrUpdate(String name, StoragePluginConfig config, boolean persist) throws ExecutionSetupException {
-    StoragePlugin oldPlugin = plugins.get(name);
-
-    boolean ok = true;
-    final StoragePlugin newPlugin = create(name, config);
-    try {
-      if (oldPlugin != null) {
-        if (config.isEnabled()) {
-          ok = plugins.replace(name, oldPlugin, newPlugin);
-          if (ok) {
+    for (;;) {
+      final StoragePlugin oldPlugin = plugins.get(name);
+      final StoragePlugin newPlugin = create(name, config);
+      boolean done = false;
+      try {
+        if (oldPlugin != null) {
+          if (config.isEnabled()) {
+            done = plugins.replace(name, oldPlugin, newPlugin);
+          } else {
+            done = plugins.remove(name, oldPlugin);
+          }
+          if (done) {
             closePlugin(oldPlugin);
           }
+        } else if (config.isEnabled()) {
+          done = (null == plugins.putIfAbsent(name, newPlugin));
         } else {
-          ok = plugins.remove(name, oldPlugin);
-          if (ok) {
-            closePlugin(oldPlugin);
-          }
+          done = true;
         }
-      } else if (config.isEnabled()) {
-        ok = (null == plugins.putIfAbsent(name, newPlugin));
+      } finally {
+        if (!done) {
+          closePlugin(newPlugin);
+        }
       }
 
-      if (!ok) {
-        throw new ExecutionSetupException("Two processes tried to change a plugin at the same time.");
-      }
-    } finally {
-      if (!ok) {
-        closePlugin(newPlugin);
+      if (done) {
+        if (persist) {
+          pluginSystemTable.put(name, config);
+        }
+
+        return newPlugin;
       }
     }
-
-    if (persist) {
-      pluginSystemTable.put(name, config);
-    }
-
-    return newPlugin;
   }
 
   public StoragePlugin getPlugin(String name) throws ExecutionSetupException {
@@ -358,17 +356,29 @@ public class StoragePluginRegistry implements Iterable<Map.Entry<String, Storage
     return plugins.iterator();
   }
 
-  public RuleSet getStoragePluginRuleSet(OptimizerRulesContext optimizerRulesContext) {
+  /**
+   * Return StoragePlugin rule sets.
+   * @param optimizerRulesContext
+   * @return Array of logical and physical rule sets.
+   */
+  public RuleSet[] getStoragePluginRuleSet(OptimizerRulesContext optimizerRulesContext) {
     // query registered engines for optimizer rules and build the storage plugin RuleSet
-    Builder<RelOptRule> setBuilder = ImmutableSet.builder();
+    Builder<RelOptRule> logicalRulesBuilder = ImmutableSet.builder();
+    Builder<RelOptRule> physicalRulesBuilder = ImmutableSet.builder();
     for (StoragePlugin plugin : this.plugins.plugins()) {
-      Set<? extends RelOptRule> rules = plugin.getOptimizerRules(optimizerRulesContext);
+      Set<? extends RelOptRule> rules = plugin.getLogicalOptimizerRules(optimizerRulesContext);
       if (rules != null && rules.size() > 0) {
-        setBuilder.addAll(rules);
+        logicalRulesBuilder.addAll(rules);
+      }
+      rules = plugin.getPhysicalOptimizerRules(optimizerRulesContext);
+      if (rules != null && rules.size() > 0) {
+        physicalRulesBuilder.addAll(rules);
       }
     }
 
-    return DrillRuleSets.create(setBuilder.build());
+    return new RuleSet[] {
+        DrillRuleSets.create(logicalRulesBuilder.build()),
+        DrillRuleSets.create(physicalRulesBuilder.build()) };
   }
 
   public DrillSchemaFactory getSchemaFactory() {

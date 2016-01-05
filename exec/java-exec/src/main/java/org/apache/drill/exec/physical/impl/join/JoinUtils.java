@@ -37,6 +37,7 @@ import org.apache.drill.common.types.TypeProtos;
 import org.apache.drill.exec.expr.ExpressionTreeMaterializer;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.record.RecordBatch;
+import org.apache.drill.exec.record.VectorAccessible;
 import org.apache.drill.exec.resolver.TypeCastRules;
 
 import java.util.LinkedList;
@@ -162,8 +163,8 @@ public class JoinUtils {
    * @param rightBatch right input record batch
    * @param context fragment context
    */
-  public static void addLeastRestrictiveCasts(LogicalExpression[] leftExpressions, RecordBatch leftBatch,
-                                              LogicalExpression[] rightExpressions, RecordBatch rightBatch,
+  public static void addLeastRestrictiveCasts(LogicalExpression[] leftExpressions, VectorAccessible leftBatch,
+                                              LogicalExpression[] rightExpressions, VectorAccessible rightBatch,
                                               FragmentContext context) {
     assert rightExpressions.length == leftExpressions.length;
 
@@ -173,6 +174,9 @@ public class JoinUtils {
       TypeProtos.MinorType rightType = rightExpression.getMajorType().getMinorType();
       TypeProtos.MinorType leftType = leftExpression.getMajorType().getMinorType();
 
+      if (rightType == TypeProtos.MinorType.UNION || leftType == TypeProtos.MinorType.UNION) {
+        continue;
+      }
       if (rightType != leftType) {
 
         // currently we only support implicit casts if the input types are numeric or varchar/varbinary

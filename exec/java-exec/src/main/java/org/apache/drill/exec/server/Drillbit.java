@@ -188,7 +188,7 @@ public class Drillbit implements AutoCloseable {
     context = new BootStrapContext(config, classpathScan);
     manager = new WorkManager(context);
     engine = new ServiceEngine(manager.getControlMessageHandler(), manager.getUserWorker(), context,
-        manager.getWorkBus(), manager.getDataHandler(), allowPortHunting);
+        manager.getWorkBus(), manager.getBee(), allowPortHunting);
 
     webServer = new WebServer(config, context.getMetrics(), manager);
 
@@ -245,13 +245,17 @@ public class Drillbit implements AutoCloseable {
       Thread.currentThread().interrupt();
     }
 
-    // TODO these should use a DeferredException
-    AutoCloseables.close(webServer, logger);
-    AutoCloseables.close(engine, logger);
-    AutoCloseables.close(storeProvider, logger);
-    AutoCloseables.close(coord, logger);
-    AutoCloseables.close(manager, logger);
-    AutoCloseables.close(context, logger);
+    try {
+      AutoCloseables.close(
+          webServer,
+          engine,
+          storeProvider,
+          coord,
+          manager,
+          context);
+    } catch(Exception e) {
+      logger.warn("Failure on close()", e);
+    }
 
     logger.info("Shutdown completed ({} ms).", w.elapsed(TimeUnit.MILLISECONDS));
     isClosed = true;

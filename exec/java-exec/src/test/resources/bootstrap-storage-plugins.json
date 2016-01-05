@@ -47,6 +47,23 @@
         },
         "avro" : {
           type: "avro"
+        },
+        "sequencefile": {
+          type: "sequencefile",
+          extensions: [ "seq" ]
+        },
+        "csvh" : {
+          type: "text",
+          extensions: [ "csvh" ],
+          delimiter: ",",
+          extractHeader: true
+        },
+        "csvh-test" : {
+          type: "text",
+          extensions: [ "csvh-test" ],
+          delimiter: ",",
+          extractHeader: true,
+          skipFirstLine: true
         }
       }
     }

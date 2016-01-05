@@ -27,7 +27,7 @@ import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.logical.StoragePluginConfig;
 import org.apache.drill.exec.ExecConstants;
-import org.apache.drill.exec.memory.OutOfMemoryException;
+import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.physical.base.AbstractWriter;
 import org.apache.drill.exec.physical.base.PhysicalOperator;
@@ -50,16 +50,13 @@ import org.apache.drill.exec.store.dfs.FormatPlugin;
 import org.apache.drill.exec.store.dfs.FormatSelection;
 import org.apache.drill.exec.store.dfs.MagicString;
 import org.apache.drill.exec.store.mock.MockStorageEngine;
-import org.apache.drill.exec.store.parquet.Metadata.ParquetFileMetadata;
-import org.apache.drill.exec.store.parquet.Metadata.ParquetTableMetadata_v1;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
-
-import parquet.format.converter.ParquetMetadataConverter;
-import parquet.hadoop.ParquetFileWriter;
+import org.apache.parquet.format.converter.ParquetMetadataConverter;
+import org.apache.parquet.hadoop.ParquetFileWriter;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
@@ -226,17 +223,18 @@ public class ParquetFormatPlugin implements FormatPlugin{
         Path metaFilePath = getMetadataPath(metaRootDir);
 
         // get the metadata for the directory by reading the metadata file
-        ParquetTableMetadata_v1 metadata  = Metadata.readBlockMeta(fs, metaFilePath.toString());
+        Metadata.ParquetTableMetadataBase metadata  = Metadata.readBlockMeta(fs, metaFilePath.toString());
         List<String> fileNames = Lists.newArrayList();
-        for (ParquetFileMetadata file : metadata.files) {
-          fileNames.add(file.path);
+        for (Metadata.ParquetFileMetadata file : metadata.getFiles()) {
+          fileNames.add(file.getPath());
         }
         // when creating the file selection, set the selection root in the form /a/b instead of
         // file:/a/b.  The reason is that the file names above have been created in the form
         // /a/b/c.parquet and the format of the selection root must match that of the file names
         // otherwise downstream operations such as partition pruning can break.
-        Path metaRootPath = Path.getPathWithoutSchemeAndAuthority(metaRootDir.getPath());
-        return new FileSelection(fileNames, metaRootPath.toString(), metadata /* save metadata for future use */);
+        final Path metaRootPath = Path.getPathWithoutSchemeAndAuthority(metaRootDir.getPath());
+        final FileSelection newSelection = FileSelection.create(null, fileNames, metaRootPath.toString());
+        return ParquetFileSelection.create(newSelection, metadata);
       } else {
         // don't expand yet; ParquetGroupScan's metadata gathering operation
         // does that.

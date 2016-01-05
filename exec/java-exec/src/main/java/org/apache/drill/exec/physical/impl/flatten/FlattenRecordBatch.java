@@ -29,6 +29,7 @@ import org.apache.drill.common.expression.FieldReference;
 import org.apache.drill.common.expression.LogicalExpression;
 import org.apache.drill.common.logical.data.NamedExpression;
 import org.apache.drill.exec.exception.ClassTransformationException;
+import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.expr.ClassGenerator;
 import org.apache.drill.exec.expr.CodeGenerator;
@@ -38,7 +39,6 @@ import org.apache.drill.exec.expr.TypeHelper;
 import org.apache.drill.exec.expr.ValueVectorReadExpression;
 import org.apache.drill.exec.expr.ValueVectorWriteExpression;
 import org.apache.drill.exec.expr.fn.DrillComplexWriterFuncHolder;
-import org.apache.drill.exec.memory.OutOfMemoryException;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.physical.config.FlattenPOP;
 import org.apache.drill.exec.record.AbstractSingleRecordBatch;
@@ -265,12 +265,12 @@ public class FlattenRecordBatch extends AbstractSingleRecordBatch<FlattenPOP> {
 
     TransferPair tp = null;
     if (flattenField instanceof RepeatedMapVector) {
-      tp = ((RepeatedMapVector)flattenField).getTransferPairToSingleMap(reference);
+      tp = ((RepeatedMapVector)flattenField).getTransferPairToSingleMap(reference, oContext.getAllocator());
     } else {
       final ValueVector vvIn = RepeatedValueVector.class.cast(flattenField).getDataVector();
       // vvIn may be null because of fast schema return for repeated list vectors
       if (vvIn != null) {
-        tp = vvIn.getTransferPair(reference);
+        tp = vvIn.getTransferPair(reference, oContext.getAllocator());
       }
     }
     return tp;

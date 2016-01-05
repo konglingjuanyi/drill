@@ -40,17 +40,18 @@ import org.apache.drill.common.types.TypeProtos.MinorType;
 import org.apache.drill.common.types.Types;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.exception.ClassTransformationException;
+import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.expr.ClassGenerator;
 import org.apache.drill.exec.expr.ClassGenerator.HoldingContainer;
 import org.apache.drill.exec.expr.CodeGenerator;
 import org.apache.drill.exec.expr.DrillFuncHolderExpr;
 import org.apache.drill.exec.expr.ExpressionTreeMaterializer;
+import org.apache.drill.exec.expr.HashVisitor;
 import org.apache.drill.exec.expr.TypeHelper;
 import org.apache.drill.exec.expr.ValueVectorReadExpression;
 import org.apache.drill.exec.expr.ValueVectorWriteExpression;
 import org.apache.drill.exec.expr.fn.DrillComplexWriterFuncHolder;
-import org.apache.drill.exec.memory.OutOfMemoryException;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.physical.config.Project;
 import org.apache.drill.exec.planner.StarColumnHelper;
@@ -123,6 +124,7 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
 
   @Override
   public IterOutcome innerNext() {
+    recordCount = 0;
     if (hasRemainder) {
       handleRemainder();
       return IterOutcome.OK;
@@ -353,7 +355,7 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
               allocationVectors.add(vv);
               final TypedFieldId fid = container.getValueVectorId(outputField.getPath());
               final ValueVectorWriteExpression write = new ValueVectorWriteExpression(fid, expr, true);
-              final HoldingContainer hc = cg.addExpr(write);
+              final HoldingContainer hc = cg.addExpr(write, false);
             }
           }
           continue;
@@ -417,7 +419,7 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
 
         // The reference name will be passed to ComplexWriter, used as the name of the output vector from the writer.
         ((DrillComplexWriterFuncHolder) ((DrillFuncHolderExpr) expr).getHolder()).setReference(namedExpression.getRef());
-        cg.addExpr(expr);
+        cg.addExpr(expr, false);
       } else {
         // need to do evaluation.
         final ValueVector vector = container.addOrGet(outputField, callBack);
@@ -425,7 +427,7 @@ public class ProjectRecordBatch extends AbstractSingleRecordBatch<Project> {
         final TypedFieldId fid = container.getValueVectorId(outputField.getPath());
         final boolean useSetSafe = !(vector instanceof FixedWidthVector);
         final ValueVectorWriteExpression write = new ValueVectorWriteExpression(fid, expr, useSetSafe);
-        final HoldingContainer hc = cg.addExpr(write);
+        final HoldingContainer hc = cg.addExpr(write, false);
 
         // We cannot do multiple transfers from the same vector. However we still need to instantiate the output vector.
         if (expr instanceof ValueVectorReadExpression) {

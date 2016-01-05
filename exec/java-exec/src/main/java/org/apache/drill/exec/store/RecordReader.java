@@ -20,7 +20,7 @@ package org.apache.drill.exec.store;
 import java.util.Map;
 
 import org.apache.drill.common.exceptions.ExecutionSetupException;
-import org.apache.drill.exec.memory.OutOfMemoryException;
+import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.ops.OperatorContext;
 import org.apache.drill.exec.physical.impl.OutputMutator;
 import org.apache.drill.exec.record.MaterializedField.Key;
@@ -44,7 +44,8 @@ public interface RecordReader extends AutoCloseable {
   void allocate(Map<Key, ValueVector> vectorMap) throws OutOfMemoryException;
 
   /**
-   * Increment record reader forward, writing into the provided output batch.
+   * Increments this record reader forward, writing via the provided output
+   * mutator into the output batch.
    *
    * @return The number of additional records added to the output.
    */
