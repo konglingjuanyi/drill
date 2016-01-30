@@ -52,7 +52,7 @@ public class FileSelection {
    * @param files  list of files
    * @param selectionRoot  root path for selections
    */
-  protected FileSelection(final List<FileStatus> statuses, final List<String> files, final String selectionRoot) {
+  public FileSelection(final List<FileStatus> statuses, final List<String> files, final String selectionRoot) {
     this.statuses = statuses;
     this.files = files;
     this.selectionRoot = Preconditions.checkNotNull(selectionRoot);
@@ -240,6 +240,14 @@ public class FileSelection {
     } else {
       return path;
     }
+  }
+
+  public List<FileStatus> getFileStatuses() {
+    return statuses;
+  }
+
+  public boolean supportDirPrunig() {
+    return true;
   }
 
 }
