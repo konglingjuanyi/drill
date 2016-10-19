@@ -26,9 +26,16 @@ public abstract class OptionValidator {
   // Stored here as well as in the option static class to allow insertion of option optionName into
   // the error messages produced by the validator
   private final String optionName;
+  private final boolean isAdminOption;
 
+  /** By default, if admin option value is not specified, it would be set to false.*/
   public OptionValidator(String optionName) {
+    this(optionName, false);
+  }
+
+  public OptionValidator(String optionName, boolean isAdminOption) {
     this.optionName = optionName;
+    this.isAdminOption = isAdminOption;
   }
 
   /**
@@ -69,6 +76,13 @@ public abstract class OptionValidator {
   }
 
   /**
+   * @return true is option is system-level property that can be only specified by admin (not user).
+   */
+  public boolean isAdminOption() {
+    return isAdminOption;
+  }
+
+  /**
    * Gets the default option value for this validator.
    *
    * @return default option value
@@ -79,7 +93,9 @@ public abstract class OptionValidator {
    * Validates the option value.
    *
    * @param value the value to validate
+   * @param manager the manager for accessing validation dependencies (options)
    * @throws UserException message to describe error with value, including range or list of expected values
    */
-  public abstract void validate(OptionValue value);
+  public abstract void validate(OptionValue value, OptionManager manager);
+
 }

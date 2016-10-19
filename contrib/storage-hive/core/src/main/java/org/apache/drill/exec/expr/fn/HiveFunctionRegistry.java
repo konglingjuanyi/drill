@@ -18,6 +18,7 @@
 package org.apache.drill.exec.expr.fn;
 
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.calcite.rel.type.RelDataType;
@@ -73,6 +74,25 @@ public class HiveFunctionRegistry implements PluggableFunctionRegistry{
     for (Class<? extends UDF> clazz : udfClasses) {
       register(clazz, methodsUDF);
     }
+
+    if (logger.isTraceEnabled()) {
+      StringBuilder allHiveFunctions = new StringBuilder();
+      for (Map.Entry<String, Class<? extends GenericUDF>> method : methodsGenericUDF.entries()) {
+        allHiveFunctions.append(method.toString()).append("\n");
+      }
+      logger.trace("Registered Hive GenericUDFs: [\n{}]", allHiveFunctions);
+
+      StringBuilder allUDFs = new StringBuilder();
+      for (Map.Entry<String, Class<? extends UDF>> method : methodsUDF.entries()) {
+        allUDFs.append(method.toString()).append("\n");
+      }
+      logger.trace("Registered Hive UDFs: [\n{}]", allUDFs);
+      StringBuilder allNonDeterministic = new StringBuilder();
+      for (Class<?> clz : nonDeterministicUDFs) {
+        allNonDeterministic.append(clz.toString()).append("\n");
+      }
+      logger.trace("Registered Hive nonDeterministicUDFs: [\n{}]", allNonDeterministic);
+    }
   }
 
   @Override
@@ -96,7 +116,7 @@ public class HiveFunctionRegistry implements PluggableFunctionRegistry{
     }
 
     UDFType type = clazz.getAnnotation(UDFType.class);
-    if (type != null && type.deterministic()) {
+    if (type != null && !type.deterministic()) {
       nonDeterministicUDFs.add(clazz);
     }
 
@@ -126,23 +146,21 @@ public class HiveFunctionRegistry implements PluggableFunctionRegistry{
 
   /**
    * Helper method which resolves the given function call to a Hive UDF. It takes an argument
-   * <i>convertVarCharToVar16Char</i> which tells to implicitly cast input arguments of type VARCHAR to VAR16CHAR
-   * and search Hive UDF registry using implicitly casted argument types.
+   * <i>varCharToStringReplacement</i> which tells to use hive STRING(true) or VARCHAR(false) type for drill VARCHAR type
+   * and search Hive UDF registry using this replacement.
    *
    * TODO: This is a rudimentary function resolver. Need to include more implicit casting such as DECIMAL28 to
    * DECIMAL38 as Hive UDFs can accept only DECIMAL38 type.
    */
-  private HiveFuncHolder resolveFunction(FunctionCall call, boolean convertVarCharToVar16Char) {
+  private HiveFuncHolder resolveFunction(FunctionCall call, boolean varCharToStringReplacement) {
     HiveFuncHolder holder;
     MajorType[] argTypes = new MajorType[call.args.size()];
     ObjectInspector[] argOIs = new ObjectInspector[call.args.size()];
     for (int i=0; i<call.args.size(); i++) {
       try {
         argTypes[i] = call.args.get(i).getMajorType();
-        if (convertVarCharToVar16Char && argTypes[i].getMinorType() == MinorType.VARCHAR) {
-          argTypes[i] = Types.withMode(MinorType.VAR16CHAR, argTypes[i].getMode());
-        }
-        argOIs[i] = ObjectInspectorHelper.getDrillObjectInspector(argTypes[i].getMode(), argTypes[i].getMinorType());
+        argOIs[i] = ObjectInspectorHelper.getDrillObjectInspector(argTypes[i].getMode(), argTypes[i].getMinorType(),
+            varCharToStringReplacement);
       } catch(Exception e) {
         // Hive throws errors if there are unsupported types. Consider there is no hive UDF supporting the
         // given argument types

@@ -20,7 +20,7 @@
   <parent>
     <groupId>org.apache.drill.exec</groupId>
     <artifactId>exec-parent</artifactId>
-    <version>1.7.0-SNAPSHOT</version>
+    <version>1.9.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>drill-jdbc-all</artifactId>
@@ -279,7 +279,8 @@
             <excludes>
               <exclude>org.slf4j:jcl-over-slf4j</exclude>
               <exclude>com.dyuproject.protostuff:*</exclude>
-              <exclude>org.apache.calcite:*</exclude>
+              <exclude>org.apache.calcite:calcite-core</exclude>
+              <exclude>org.apache.calcite:calcite-linq4j</exclude>
               <exclude>org.pentaho:*</exclude>
               <exclude>org.msgpack:*</exclude>
               <exclude>xerces:*</exclude>
@@ -312,6 +313,7 @@
               <exclude>org.hamcrest:hamcrest-core</exclude>
               <exclude>org.mockito:mockito-core</exclude>
               <exclude>org.objenesis:objenesis</exclude>
+              <exclude>org.eclipse.jetty:*</exclude>
             </excludes>
           </artifactSet>
           <relocations>
@@ -386,7 +388,16 @@
                <exclude>**/logback.xml</exclude>
                <exclude>**/LICENSE.txt</exclude>
                <exclude>**/*.java</exclude>
-               <exclude>**/META-INF/**</exclude>
+               <exclude>META-INF/ASL2.0</exclude>
+               <exclude>META-INF/NOTICE.txt</exclude>
+               <exclude>META-INF/drill-module-scan/**</exclude>
+               <exclude>META-INF/jboss-beans.xml</exclude>
+               <exclude>META-INF/license/**</exclude>
+               <exclude>META-INF/maven/**</exclude>
+               <exclude>META-INF/native/**</exclude>
+               <exclude>META-INF/services/com.fasterxml.*</exclude>
+               <exclude>META-INF/services/javax.ws.*</exclude>
+               <exclude>META-INF/**/*.properties</exclude>
                <exclude>**/org.codehaus.commons.compiler.properties</exclude>
                <exclude>**/*.SF</exclude>
                <exclude>**/*.RSA</exclude>
@@ -441,7 +452,7 @@
                   This is likely due to you adding new dependencies to a java-exec and not updating the excludes in this module. This is important as it minimizes the size of the dependency of Drill application users.
                   
                   </message>
-                  <maxsize>20000000</maxsize>
+                  <maxsize>21000000</maxsize>
                   <minsize>15000000</minsize>
                   <files>
                    <file>${project.build.directory}/drill-jdbc-all-${project.version}.jar</file>

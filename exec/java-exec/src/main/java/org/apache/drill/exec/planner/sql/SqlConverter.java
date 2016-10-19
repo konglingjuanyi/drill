@@ -54,17 +54,22 @@ import org.apache.calcite.sql.util.ChainedSqlOperatorTable;
 import org.apache.calcite.sql.validate.AggregatingSelectScope;
 import org.apache.calcite.sql.validate.SqlConformance;
 import org.apache.calcite.sql.validate.SqlValidatorCatalogReader;
+import org.apache.calcite.sql.validate.SqlValidatorException;
 import org.apache.calcite.sql.validate.SqlValidatorImpl;
 import org.apache.calcite.sql.validate.SqlValidatorScope;
 import org.apache.calcite.sql2rel.RelDecorrelator;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.drill.common.exceptions.UserException;
+import org.apache.drill.exec.exception.FunctionNotFoundException;
 import org.apache.drill.exec.expr.fn.FunctionImplementationRegistry;
 import org.apache.drill.exec.ops.UdfUtilities;
 import org.apache.drill.exec.planner.cost.DrillCostBase;
 import org.apache.drill.exec.planner.logical.DrillConstExecutor;
 import org.apache.drill.exec.planner.physical.DrillDistributionTraitDef;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
+import org.apache.drill.exec.planner.physical.PrelUtil;
 import org.apache.drill.exec.planner.sql.parser.impl.DrillParserWithCompoundIdConverter;
 
 import com.google.common.base.Joiner;
@@ -79,6 +84,8 @@ public class SqlConverter {
 
   private final JavaTypeFactory typeFactory;
   private final SqlParser.Config parserConfig;
+  // Allow the default config to be modified using immutable configs
+  private SqlToRelConverter.Config sqlToRelConverterConfig;
   private final CalciteCatalogReader catalog;
   private final PlannerSettings settings;
   private final SchemaPlus rootSchema;
@@ -100,6 +107,7 @@ public class SqlConverter {
     this.util = util;
     this.functions = functions;
     this.parserConfig = new ParserConfig();
+    this.sqlToRelConverterConfig = new SqlToRelConverterConfig();
     this.isInnerQuery = false;
     this.typeFactory = new JavaTypeFactoryImpl(DRILL_TYPE_SYSTEM);
     this.defaultSchema = defaultSchema;
@@ -118,6 +126,7 @@ public class SqlConverter {
   private SqlConverter(SqlConverter parent, SchemaPlus defaultSchema, SchemaPlus rootSchema,
       CalciteCatalogReader catalog) {
     this.parserConfig = parent.parserConfig;
+    this.sqlToRelConverterConfig = parent.sqlToRelConverterConfig;
     this.defaultSchema = defaultSchema;
     this.functions = parent.functions;
     this.util = parent.util;
@@ -155,6 +164,11 @@ public class SqlConverter {
       SqlNode validatedNode = validator.validate(parsedNode);
       return validatedNode;
     } catch (RuntimeException e) {
+      final Throwable rootCause = ExceptionUtils.getRootCause(e);
+      if (rootCause instanceof SqlValidatorException
+          && StringUtils.contains(rootCause.getMessage(), "No match found for function signature")) {
+        throw new FunctionNotFoundException(rootCause.getMessage(), e);
+      }
       UserException.Builder builder = UserException
           .validationError(e)
           .addContext("SQL Query", sql);
@@ -223,6 +237,11 @@ public class SqlConverter {
       return 38;
     }
 
+    @Override
+    public boolean isSchemaCaseSensitive() {
+      // Drill uses case-insensitive and case-preserve policy
+      return false;
+    }
   }
 
   public RelNode toRel(
@@ -239,10 +258,8 @@ public class SqlConverter {
 
     final RelOptCluster cluster = RelOptCluster.create(planner, rexBuilder);
     final SqlToRelConverter sqlToRelConverter =
-        new SqlToRelConverter(new Expander(), validator, catalog, cluster, DrillConvertletTable.INSTANCE);
-
-    sqlToRelConverter.setTrimUnusedFields(false);
-    sqlToRelConverter.enableTableAccessConversion(false);
+        new SqlToRelConverter(new Expander(), validator, catalog, cluster, DrillConvertletTable.INSTANCE,
+            sqlToRelConverterConfig);
     final RelNode rel = sqlToRelConverter.convertQuery(validatedNode, false, !isInnerQuery);
     final RelNode rel2 = sqlToRelConverter.flattenTypes(rel, true);
     final RelNode rel3 = RelDecorrelator.decorrelateQuery(rel2);
@@ -338,6 +355,46 @@ public class SqlConverter {
       return DrillParserWithCompoundIdConverter.FACTORY;
     }
 
+  }
+
+  private class SqlToRelConverterConfig implements SqlToRelConverter.Config {
+
+    final int inSubqueryThreshold = (int)settings.getInSubqueryThreshold();
+
+    @Override
+    public boolean isConvertTableAccess() {
+      return false;
+    }
+
+    @Override
+    public boolean isDecorrelationEnabled() {
+      return SqlToRelConverterConfig.DEFAULT.isDecorrelationEnabled();
+    }
+
+    @Override
+    public boolean isTrimUnusedFields() {
+      return false;
+    }
+
+    @Override
+    public boolean isCreateValuesRel() {
+      return SqlToRelConverterConfig.DEFAULT.isCreateValuesRel();
+    }
+
+    @Override
+    public boolean isExplain() {
+      return SqlToRelConverterConfig.DEFAULT.isExplain();
+    }
+
+    @Override
+    public boolean isExpand() {
+      return SqlToRelConverterConfig.DEFAULT.isExpand();
+    }
+
+    @Override
+    public int getInSubqueryThreshold() {
+      return inSubqueryThreshold;
+    }
   }
 
   /**

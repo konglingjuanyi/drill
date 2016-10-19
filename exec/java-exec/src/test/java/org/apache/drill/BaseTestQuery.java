@@ -43,6 +43,7 @@ import org.apache.drill.exec.proto.UserBitShared;
 import org.apache.drill.exec.proto.UserBitShared.QueryId;
 import org.apache.drill.exec.proto.UserBitShared.QueryResult.QueryState;
 import org.apache.drill.exec.proto.UserBitShared.QueryType;
+import org.apache.drill.exec.proto.UserProtos.PreparedStatementHandle;
 import org.apache.drill.exec.record.RecordBatchLoader;
 import org.apache.drill.exec.rpc.ConnectionThrottle;
 import org.apache.drill.exec.rpc.user.AwaitableUserResultsListener;
@@ -63,7 +64,6 @@ import org.junit.runner.Description;
 
 import com.google.common.base.Charsets;
 import com.google.common.base.Preconditions;
-import com.google.common.io.Files;
 import com.google.common.io.Resources;
 
 public class BaseTestQuery extends ExecTest {
@@ -293,9 +293,20 @@ public class BaseTestQuery extends ExecTest {
     return testRunAndReturn(QueryType.PHYSICAL, physical);
   }
 
-  public static List<QueryDataBatch>  testRunAndReturn(QueryType type, String query) throws Exception{
-    query = QueryTestUtil.normalizeQuery(query);
-    return client.runQuery(type, query);
+  public static List<QueryDataBatch>  testRunAndReturn(QueryType type, Object query) throws Exception{
+    if (type == QueryType.PREPARED_STATEMENT) {
+      Preconditions.checkArgument(query instanceof PreparedStatementHandle,
+          "Expected an instance of PreparedStatement as input query");
+      return testPreparedStatement((PreparedStatementHandle)query);
+    } else {
+      Preconditions.checkArgument(query instanceof String, "Expected a string as input query");
+      query = QueryTestUtil.normalizeQuery((String)query);
+      return client.runQuery(type, (String)query);
+    }
+  }
+
+  public static List<QueryDataBatch> testPreparedStatement(PreparedStatementHandle handle) throws Exception {
+    return client.executePreparedStatement(handle);
   }
 
   public static int testRunAndPrint(final QueryType type, final String query) throws Exception {
@@ -410,19 +421,6 @@ public class BaseTestQuery extends ExecTest {
 
     return file.getPath();
   }
-
-  /**
-   * Create a temp directory to store the given <i>dirName</i>
-   * @param dirName
-   * @return Full path including temp parent directory and given directory name.
-   */
-  public static String getTempDir(final String dirName) {
-    final File dir = Files.createTempDir();
-    dir.deleteOnExit();
-
-    return dir.getAbsolutePath() + File.separator + dirName;
-  }
-
 
   protected static void setSessionOption(final String option, final String value) {
     try {
