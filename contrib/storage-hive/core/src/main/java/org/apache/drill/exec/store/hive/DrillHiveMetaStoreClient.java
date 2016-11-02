@@ -21,7 +21,10 @@ import com.google.common.base.Strings;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import org.apache.calcite.schema.Schema;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.exec.util.ImpersonationUtil;
@@ -201,8 +204,12 @@ public abstract class DrillHiveMetaStoreClient extends HiveMetaStoreClient {
     try {
       return mClient.getAllDatabases();
     } catch (MetaException e) {
-      throw e;
-    } catch (TException e) {
+      /*
+         HiveMetaStoreClient is encapsulating both the MetaException/TExceptions inside MetaException.
+         Since we don't have good way to differentiate, we will close older connection and retry once.
+         This is only applicable for getAllTables and getAllDatabases method since other methods are
+         properly throwing correct exceptions.
+      */
       logger.warn("Failure while attempting to get hive databases. Retries once.", e);
       try {
         mClient.close();
@@ -219,9 +226,13 @@ public abstract class DrillHiveMetaStoreClient extends HiveMetaStoreClient {
       throws TException {
     try {
       return mClient.getAllTables(dbName);
-    } catch (MetaException | UnknownDBException e) {
-      throw e;
-    } catch (TException e) {
+    } catch (MetaException e) {
+      /*
+         HiveMetaStoreClient is encapsulating both the MetaException/TExceptions inside MetaException.
+         Since we don't have good way to differentiate, we will close older connection and retry once.
+         This is only applicable for getAllTables and getAllDatabases method since other methods are
+         properly throwing correct exceptions.
+      */
       logger.warn("Failure while attempting to get hive tables. Retries once.", e);
       try {
         mClient.close();
@@ -231,6 +242,29 @@ public abstract class DrillHiveMetaStoreClient extends HiveMetaStoreClient {
       mClient.reconnect();
       return mClient.getAllTables(dbName);
     }
+  }
+
+  public static List<Table> getTablesByNamesByBulkLoadHelper(
+      final HiveMetaStoreClient mClient, final List<String> tableNames, final String schemaName,
+      final int bulkSize) {
+    final int totalTables = tableNames.size();
+    final List<org.apache.hadoop.hive.metastore.api.Table> tables = Lists.newArrayList();
+
+    // In each round, Drill asks for a sub-list of all the requested tables
+    for (int fromIndex = 0; fromIndex < totalTables; fromIndex += bulkSize) {
+      final int toIndex = Math.min(fromIndex + bulkSize, totalTables);
+      final List<String> eachBulkofTableNames = tableNames.subList(fromIndex, toIndex);
+      List<org.apache.hadoop.hive.metastore.api.Table> eachBulkofTables;
+      // Retries once if the first call to fetch the metadata fails
+      try {
+        eachBulkofTables = DrillHiveMetaStoreClient.getTableObjectsByNameHelper(mClient, schemaName, eachBulkofTableNames);
+      } catch (Exception e) {
+        logger.warn("Exception occurred while trying to read tables from {}: {}", schemaName, e.getCause());
+        return ImmutableList.of();
+      }
+      tables.addAll(eachBulkofTables);
+    }
+    return tables;
   }
 
   /** Helper method which gets table metadata. Retries once if the first call to fetch the metadata fails */
