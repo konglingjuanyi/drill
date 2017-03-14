@@ -66,7 +66,6 @@ public interface ExecConstants {
 
   // External Sort Boot configuration
 
-  String EXTERNAL_SORT_TARGET_BATCH_SIZE = "drill.exec.sort.external.batch.size";
   String EXTERNAL_SORT_TARGET_SPILL_BATCH_SIZE = "drill.exec.sort.external.spill.batch.size";
   String EXTERNAL_SORT_SPILL_GROUP_SIZE = "drill.exec.sort.external.spill.group.size";
   String EXTERNAL_SORT_SPILL_THRESHOLD = "drill.exec.sort.external.spill.threshold";
@@ -79,6 +78,8 @@ public interface ExecConstants {
   String EXTERNAL_SORT_SPILL_BATCH_SIZE = "drill.exec.sort.external.spill.spill_batch_size";
   String EXTERNAL_SORT_MERGE_BATCH_SIZE = "drill.exec.sort.external.spill.merge_batch_size";
   String EXTERNAL_SORT_MAX_MEMORY = "drill.exec.sort.external.mem_limit";
+
+  // Used only by the "unmanaged" sort.
   String EXTERNAL_SORT_BATCH_LIMIT = "drill.exec.sort.external.batch_limit";
 
   // External Sort Runtime options
@@ -90,6 +91,7 @@ public interface ExecConstants {
   String TEXT_LINE_READER_BUFFER_SIZE = "drill.exec.storage.file.text.buffer.size";
   String HAZELCAST_SUBNETS = "drill.exec.cache.hazel.subnets";
   String HTTP_ENABLE = "drill.exec.http.enabled";
+  String HTTP_MAX_PROFILES = "drill.exec.http.max_profiles";
   String HTTP_PORT = "drill.exec.http.port";
   String HTTP_ENABLE_SSL = "drill.exec.http.ssl_enabled";
   String HTTP_CORS_ENABLED = "drill.exec.http.cors.enabled";
@@ -107,9 +109,13 @@ public interface ExecConstants {
   String SYS_STORE_PROVIDER_LOCAL_ENABLE_WRITE = "drill.exec.sys.store.provider.local.write";
   String IMPERSONATION_ENABLED = "drill.exec.impersonation.enabled";
   String IMPERSONATION_MAX_CHAINED_USER_HOPS = "drill.exec.impersonation.max_chained_user_hops";
+  String AUTHENTICATION_MECHANISMS = "drill.exec.security.auth.mechanisms";
   String USER_AUTHENTICATION_ENABLED = "drill.exec.security.user.auth.enabled";
   String USER_AUTHENTICATOR_IMPL = "drill.exec.security.user.auth.impl";
   String PAM_AUTHENTICATOR_PROFILES = "drill.exec.security.user.auth.pam_profiles";
+  String BIT_AUTHENTICATION_ENABLED = "drill.exec.security.bit.auth.enabled";
+  String BIT_AUTHENTICATION_MECHANISM = "drill.exec.security.bit.auth.mechanism";
+  String USE_LOGIN_PRINCIPAL = "drill.exec.security.bit.auth.use_login_principal";
   /** Size of JDBC batch queue (in batches) above which throttling begins. */
   String JDBC_BATCH_QUEUE_THROTTLING_THRESHOLD =
       "drill.jdbc.batch_queue_throttling_threshold";
@@ -413,4 +419,30 @@ public interface ExecConstants {
 
   String DYNAMIC_UDF_SUPPORT_ENABLED = "exec.udf.enable_dynamic_support";
   BooleanValidator DYNAMIC_UDF_SUPPORT_ENABLED_VALIDATOR = new BooleanValidator(DYNAMIC_UDF_SUPPORT_ENABLED, true, true);
+
+  /**
+   * Option to save query profiles. If false, no query profile will be saved
+   * for any query.
+   */
+  String ENABLE_QUERY_PROFILE_OPTION = "exec.query_profile.save";
+  BooleanValidator ENABLE_QUERY_PROFILE_VALIDATOR = new BooleanValidator(
+      ENABLE_QUERY_PROFILE_OPTION, true, false);
+
+  /**
+   * Profiles are normally written after the last client message to reduce latency.
+   * When running tests, however, we want the profile written <i>before</i> the
+   * return so that the client can immediately read the profile for test
+   * verification.
+   */
+  String QUERY_PROFILE_DEBUG_OPTION = "exec.query_profile.debug_mode";
+  BooleanValidator QUERY_PROFILE_DEBUG_VALIDATOR = new BooleanValidator(
+      QUERY_PROFILE_DEBUG_OPTION, false, false);
+
+  String USE_DYNAMIC_UDFS_KEY = "exec.udf.use_dynamic";
+  BooleanValidator USE_DYNAMIC_UDFS = new BooleanValidator(USE_DYNAMIC_UDFS_KEY, true);
+
+
+  String QUERY_TRANSIENT_STATE_UPDATE_KEY = "exec.query.progress.update";
+  BooleanValidator QUERY_TRANSIENT_STATE_UPDATE = new BooleanValidator(QUERY_TRANSIENT_STATE_UPDATE_KEY, true);
+
 }

@@ -31,12 +31,15 @@ import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
+import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.SecurityContext;
+import javax.ws.rs.core.UriInfo;
 import javax.xml.bind.annotation.XmlRootElement;
 
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.exceptions.UserException;
+import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.coord.ClusterCoordinator;
 import org.apache.drill.exec.coord.store.TransientStore;
 import org.apache.drill.exec.proto.GeneralRPCProtos.Ack;
@@ -61,31 +64,10 @@ import com.google.common.collect.Lists;
 public class ProfileResources {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ProfileResources.class);
 
-  public final static int MAX_PROFILES = 100;
-
   @Inject UserAuthEnabled authEnabled;
   @Inject WorkManager work;
   @Inject DrillUserPrincipal principal;
   @Inject SecurityContext sc;
-
-  /**
-   * Returns elapsed time a human-readable format. If end time is less than the start time, current epoch time is assumed as the end time.
-   * e.g. getPrettyDuration(1468368841695,1468394096016) = '7 hr 00 min 54.321 sec'
-   * @param startTimeMillis Start Time in milliseconds
-   * @param endTimeMillis   End Time in milliseconds
-   * @return                Human-Readable Elapsed Time
-   */
-  public static String getPrettyDuration(long startTimeMillis, long endTimeMillis) {
-    long durationInMillis = (startTimeMillis > endTimeMillis ? System.currentTimeMillis() : endTimeMillis) - startTimeMillis;
-    long hours = TimeUnit.MILLISECONDS.toHours(durationInMillis);
-    long minutes = TimeUnit.MILLISECONDS.toMinutes(durationInMillis) - TimeUnit.HOURS.toMinutes(TimeUnit.MILLISECONDS.toHours(durationInMillis));
-    long seconds = TimeUnit.MILLISECONDS.toSeconds(durationInMillis) - TimeUnit.MINUTES.toSeconds(TimeUnit.MILLISECONDS.toMinutes(durationInMillis));
-    long milliSeconds = durationInMillis - TimeUnit.SECONDS.toMillis(TimeUnit.MILLISECONDS.toSeconds(durationInMillis));
-    String formattedDuration = (hours > 0 ? hours + " hr " : "") +
-      ((minutes + hours) > 0 ? String.format("%02d min ", minutes) : "") +
-      seconds + "." + String.format("%03d sec", milliSeconds) ;
-    return formattedDuration;
-  }
 
   public static class ProfileInfo implements Comparable<ProfileInfo> {
     public static final SimpleDateFormat format = new SimpleDateFormat("MM/dd/yyyy HH:mm:ss");
@@ -137,7 +119,7 @@ public class ProfileResources {
     }
 
     public String getDuration() {
-      return getPrettyDuration(startTime, endTime);
+      return (new SimpleDurationFormat(startTime, endTime)).verbose();
     }
 
     public String getState() {
@@ -190,10 +172,13 @@ public class ProfileResources {
     public List<String> getErrors() { return errors; }
   }
 
+  //max Param to cap listing of profiles
+  private static final String MAX_QPROFILES_PARAM = "max";
+
   @GET
   @Path("/profiles.json")
   @Produces(MediaType.APPLICATION_JSON)
-  public QProfiles getProfilesJSON() {
+  public QProfiles getProfilesJSON(@Context UriInfo uriInfo) {
     try {
       final PersistentStore<QueryProfile> completed = getProvider().getOrCreateStore(QueryManager.QUERY_PROFILE);
       final TransientStore<QueryInfo> running = getCoordinator().getOrCreateTransientStore(QueryManager.RUNNING_QUERY_INFO);
@@ -220,7 +205,15 @@ public class ProfileResources {
 
       final List<ProfileInfo> finishedQueries = Lists.newArrayList();
 
-      final Iterator<Map.Entry<String, QueryProfile>> range = completed.getRange(0, MAX_PROFILES);
+      //Defining #Profiles to load
+      int maxProfilesToLoad = work.getContext().getConfig().getInt(ExecConstants.HTTP_MAX_PROFILES);
+      String maxProfilesParams = uriInfo.getQueryParameters().getFirst(MAX_QPROFILES_PARAM);
+      if (maxProfilesParams != null && !maxProfilesParams.isEmpty()) {
+        maxProfilesToLoad = Integer.valueOf(maxProfilesParams);
+      }
+
+      final Iterator<Map.Entry<String, QueryProfile>> range = completed.getRange(0, maxProfilesToLoad);
+
       while (range.hasNext()) {
         try {
           final Map.Entry<String, QueryProfile> profileEntry = range.next();
@@ -237,16 +230,16 @@ public class ProfileResources {
       return new QProfiles(runningQueries, finishedQueries, errors);
     } catch (Exception e) {
       throw UserException.resourceError(e)
-          .message("Failed to get profiles from persistent or ephemeral store.")
-          .build(logger);
+      .message("Failed to get profiles from persistent or ephemeral store.")
+      .build(logger);
     }
   }
 
   @GET
   @Path("/profiles")
   @Produces(MediaType.TEXT_HTML)
-  public Viewable getProfiles() {
-    QProfiles profiles = getProfilesJSON();
+  public Viewable getProfiles(@Context UriInfo uriInfo) {
+    QProfiles profiles = getProfilesJSON(uriInfo);
     return ViewableWithPermissions.create(authEnabled.get(), "/rest/profile/list.ftl", sc, profiles);
   }
 
@@ -291,8 +284,8 @@ public class ProfileResources {
     }
 
     throw UserException.validationError()
-        .message("No profile with given query id '%s' exists. Please verify the query id.", queryId)
-        .build(logger);
+    .message("No profile with given query id '%s' exists. Please verify the query id.", queryId)
+    .build(logger);
   }
 
 
@@ -352,16 +345,17 @@ public class ProfileResources {
   private void checkOrThrowProfileViewAuthorization(final QueryProfile profile) {
     if (!principal.canManageProfileOf(profile.getUser())) {
       throw UserException.permissionError()
-          .message("Not authorized to view the profile of query '%s'", profile.getId())
-          .build(logger);
+      .message("Not authorized to view the profile of query '%s'", profile.getId())
+      .build(logger);
     }
   }
 
   private void checkOrThrowQueryCancelAuthorization(final String queryUser, final String queryId) {
     if (!principal.canManageQueryOf(queryUser)) {
       throw UserException.permissionError()
-          .message("Not authorized to cancel the query '%s'", queryId)
-          .build(logger);
+      .message("Not authorized to cancel the query '%s'", queryId)
+      .build(logger);
     }
   }
 }
+

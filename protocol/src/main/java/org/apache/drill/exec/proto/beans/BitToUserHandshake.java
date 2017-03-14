@@ -24,6 +24,8 @@ import java.io.Externalizable;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.dyuproject.protostuff.GraphIOUtil;
 import com.dyuproject.protostuff.Input;
@@ -52,6 +54,8 @@ public final class BitToUserHandshake implements Externalizable, Message<BitToUs
     private String errorId;
     private String errorMessage;
     private RpcEndpointInfos serverInfos;
+    private List<String> authenticationMechanisms;
+    private List<RpcType> supportedMethods;
 
     public BitToUserHandshake()
     {
@@ -125,6 +129,32 @@ public final class BitToUserHandshake implements Externalizable, Message<BitToUs
         return this;
     }
 
+    // authenticationMechanisms
+
+    public List<String> getAuthenticationMechanismsList()
+    {
+        return authenticationMechanisms;
+    }
+
+    public BitToUserHandshake setAuthenticationMechanismsList(List<String> authenticationMechanisms)
+    {
+        this.authenticationMechanisms = authenticationMechanisms;
+        return this;
+    }
+
+    // supportedMethods
+
+    public List<RpcType> getSupportedMethodsList()
+    {
+        return supportedMethods;
+    }
+
+    public BitToUserHandshake setSupportedMethodsList(List<RpcType> supportedMethods)
+    {
+        this.supportedMethods = supportedMethods;
+        return this;
+    }
+
     // java serialization
 
     public void readExternal(ObjectInput in) throws IOException
@@ -195,6 +225,16 @@ public final class BitToUserHandshake implements Externalizable, Message<BitToUs
                     message.serverInfos = input.mergeObject(message.serverInfos, RpcEndpointInfos.getSchema());
                     break;
 
+                case 7:
+                    if(message.authenticationMechanisms == null)
+                        message.authenticationMechanisms = new ArrayList<String>();
+                    message.authenticationMechanisms.add(input.readString());
+                    break;
+                case 8:
+                    if(message.supportedMethods == null)
+                        message.supportedMethods = new ArrayList<RpcType>();
+                    message.supportedMethods.add(RpcType.valueOf(input.readEnum()));
+                    break;
                 default:
                     input.handleUnknownField(number, this);
             }   
@@ -219,6 +259,24 @@ public final class BitToUserHandshake implements Externalizable, Message<BitToUs
         if(message.serverInfos != null)
              output.writeObject(6, message.serverInfos, RpcEndpointInfos.getSchema(), false);
 
+
+        if(message.authenticationMechanisms != null)
+        {
+            for(String authenticationMechanisms : message.authenticationMechanisms)
+            {
+                if(authenticationMechanisms != null)
+                    output.writeString(7, authenticationMechanisms, true);
+            }
+        }
+
+        if(message.supportedMethods != null)
+        {
+            for(RpcType supportedMethods : message.supportedMethods)
+            {
+                if(supportedMethods != null)
+                    output.writeEnum(8, supportedMethods.number, true);
+            }
+        }
     }
 
     public String getFieldName(int number)
@@ -230,6 +288,8 @@ public final class BitToUserHandshake implements Externalizable, Message<BitToUs
             case 4: return "errorId";
             case 5: return "errorMessage";
             case 6: return "serverInfos";
+            case 7: return "authenticationMechanisms";
+            case 8: return "supportedMethods";
             default: return null;
         }
     }
@@ -248,6 +308,8 @@ public final class BitToUserHandshake implements Externalizable, Message<BitToUs
         __fieldMap.put("errorId", 4);
         __fieldMap.put("errorMessage", 5);
         __fieldMap.put("serverInfos", 6);
+        __fieldMap.put("authenticationMechanisms", 7);
+        __fieldMap.put("supportedMethods", 8);
     }
     
 }

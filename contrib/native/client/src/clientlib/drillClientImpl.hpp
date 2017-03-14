@@ -50,6 +50,7 @@
 #include "utils.hpp"
 #include "User.pb.h"
 #include "UserBitShared.pb.h"
+#include "saslAuthenticatorImpl.hpp"
 
 namespace Drill {
 
@@ -73,7 +74,7 @@ class DrillClientImplBase{
 
         //Connect via Zookeeper or directly.
         //Makes an initial connection to a drillbit. successful connect adds the first drillbit to the pool.
-        virtual connectionStatus_t connect(const char* connStr)=0;
+        virtual connectionStatus_t connect(const char* connStr, DrillUserProperties* props)=0;
 
         // Test whether the client is active. Returns true if any one of the underlying connections is active
         virtual bool Active()=0;
@@ -200,7 +201,7 @@ class DrillClientQueryResult: public DrillClientBaseHandle<pfnQueryResultsListen
         m_pSchemaListener(NULL) {
     };
 
-    ~DrillClientQueryResult(){
+    virtual ~DrillClientQueryResult(){
         this->clearAndDestroy();
     };
 
@@ -209,6 +210,7 @@ class DrillClientQueryResult: public DrillClientBaseHandle<pfnQueryResultsListen
         m_pSchemaListener=l;
     }
 
+    void cancel();
     // Synchronous call to get data. Caller assumes ownership of the record batch
     // returned and it is assumed to have been consumed.
     RecordBatch*  getNext();
@@ -306,6 +308,18 @@ class DrillClientPrepareHandle: public DrillClientBaseHandle<pfnPreparedStatemen
     ::exec::user::PreparedStatementHandle m_preparedStatementHandle;
 };
 
+typedef status_t (*pfnServerMetaListener)(void* ctx, const exec::user::ServerMeta* serverMeta, DrillClientError* err);
+class DrillClientServerMetaHandle: public DrillClientBaseHandle<pfnServerMetaListener, const exec::user::ServerMeta*> {
+    public:
+	DrillClientServerMetaHandle(DrillClientImpl& client, int32_t coordId, pfnServerMetaListener listener, void* listenerCtx):
+    	DrillClientBaseHandle<pfnServerMetaListener, const exec::user::ServerMeta*>(client, coordId, "server meta", listener, listenerCtx) {
+    };
+
+    private:
+    friend class DrillClientImpl;
+
+};
+
 template<typename Listener, typename MetaType, typename MetaImpl, typename MetadataResult>
 class DrillClientMetadataResult: public DrillClientBaseHandle<Listener, const DrillCollection<MetaType>*> {
 public:
@@ -362,6 +376,9 @@ class DrillClientImpl : public DrillClientImplBase{
             m_handshakeVersion(0),
             m_handshakeStatus(exec::user::SUCCESS),
             m_bIsConnected(false),
+            m_saslAuthenticator(NULL),
+    		m_saslResultCode(SASL_OK),
+            m_saslDone(false),
             m_pendingRequests(0),
             m_pError(NULL),
             m_pListenerThread(NULL),
@@ -384,6 +401,10 @@ class DrillClientImpl : public DrillClientImplBase{
             if(this->m_pWork!=NULL){
                 delete this->m_pWork;
                 this->m_pWork = NULL;
+            }
+            if(this->m_saslAuthenticator!=NULL){
+                delete this->m_saslAuthenticator;
+                this->m_saslAuthenticator = NULL;
             }
 
             m_heartbeatTimer.cancel();
@@ -415,7 +436,7 @@ class DrillClientImpl : public DrillClientImplBase{
         };
 
         //Connect via Zookeeper or directly
-        connectionStatus_t connect(const char* connStr);
+        connectionStatus_t connect(const char* connStr, DrillUserProperties* props);
         // test whether the client is active
         bool Active();
         void Close() ;
@@ -480,6 +501,7 @@ class DrillClientImpl : public DrillClientImplBase{
         status_t processSchemasResult(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg );
         status_t processTablesResult(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg );
         status_t processColumnsResult(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg );
+        status_t processServerMetaResult(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg );
         DrillClientQueryResult* findQueryResult(const exec::shared::QueryId& qid);
         status_t processQueryStatusResult( exec::shared::QueryResult* qr,
                 DrillClientQueryResult* pDrillClientQueryResult);
@@ -498,7 +520,6 @@ class DrillClientImpl : public DrillClientImplBase{
                 DrillClientQueryResult* pQueryResult);
         void broadcastError(DrillClientError* pErr);
         void removeQueryHandle(DrillClientQueryHandle* pQueryHandle);
-        void removeQueryResult(DrillClientQueryResult* pQueryResult);
         void sendAck(const rpc::InBoundRpcMessage& msg, bool isOk);
         void sendCancel(const exec::shared::QueryId* pQueryId);
 
@@ -506,10 +527,17 @@ class DrillClientImpl : public DrillClientImplBase{
         Handle* sendMsg(boost::function<Handle*(int32_t)> handleFactory, ::exec::user::RpcType type, const ::google::protobuf::Message& msg);
 
         // metadata requests
-        DrillClientCatalogResult* getCatalogs(const std::string& catalogPattern, Metadata::pfnCatalogMetadataListener listener, void* listenerCtx);
-        DrillClientSchemaResult* getSchemas(const std::string& catalogPattern, const std::string& schemaPattern, Metadata::pfnSchemaMetadataListener listener, void* listenerCtx);
-        DrillClientTableResult* getTables(const std::string& catalogPattern, const std::string& schemaPattern, const std::string& tablePattern, const std::vector<std::string>* tableTypes, Metadata::pfnTableMetadataListener listener, void* listenerCtx);
-        DrillClientColumnResult* getColumns(const std::string& catalogPattern, const std::string& schemaPattern, const std::string& tablePattern, const std::string& columnPattern, Metadata::pfnColumnMetadataListener listener, void* listenerCtx);
+        DrillClientCatalogResult* getCatalogs(const std::string& catalogPattern, const std::string& searchEscapeString, Metadata::pfnCatalogMetadataListener listener, void* listenerCtx);
+        DrillClientSchemaResult* getSchemas(const std::string& catalogPattern, const std::string& schemaPattern, const std::string& searchEscapeString, Metadata::pfnSchemaMetadataListener listener, void* listenerCtx);
+        DrillClientTableResult* getTables(const std::string& catalogPattern, const std::string& schemaPattern, const std::string& tablePattern, const std::vector<std::string>* tableTypes, const std::string& searchEscapeString, Metadata::pfnTableMetadataListener listener, void* listenerCtx);
+        DrillClientColumnResult* getColumns(const std::string& catalogPattern, const std::string& schemaPattern, const std::string& tablePattern, const std::string& columnPattern, const std::string& searchEscapeString, Metadata::pfnColumnMetadataListener listener, void* listenerCtx);
+
+        // SASL exchange
+        connectionStatus_t handleAuthentication(const DrillUserProperties *userProperties);
+        void initiateAuthentication();
+        void sendSaslResponse(const exec::shared::SaslMessage& response);
+        void processSaslChallenge(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg);
+        void finishAuthentication();
 
         void shutdownSocket();
 
@@ -519,7 +547,15 @@ class DrillClientImpl : public DrillClientImplBase{
         std::string m_handshakeErrorId;
         std::string m_handshakeErrorMsg;
         exec::user::RpcEndpointInfos m_serverInfos;
+        std::vector<exec::user::RpcType> m_supportedMethods;
         bool m_bIsConnected;
+
+        std::vector<std::string> m_serverAuthMechanisms;
+        SaslAuthenticatorImpl* m_saslAuthenticator;
+        int m_saslResultCode;
+        bool m_saslDone;
+        boost::mutex m_saslMutex; // mutex to protect m_saslDone
+        boost::condition_variable m_saslCv; // to signal completion of SASL exchange
 
         std::string m_connectStr; 
 
@@ -605,7 +641,7 @@ class PooledDrillClientImpl : public DrillClientImplBase{
 
         //Connect via Zookeeper or directly.
         //Makes an initial connection to a drillbit. successful connect adds the first drillbit to the pool.
-        connectionStatus_t connect(const char* connStr);
+        connectionStatus_t connect(const char* connStr, DrillUserProperties* props);
 
         // Test whether the client is active. Returns true if any one of the underlying connections is active
         bool Active();
