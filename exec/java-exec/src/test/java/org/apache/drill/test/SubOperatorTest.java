@@ -15,20 +15,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.drill.exec.vector;
+package org.apache.drill.test;
 
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 
-public interface FixedWidthVector extends ValueVector {
+public class SubOperatorTest extends DrillTest {
 
-  /**
-   * Allocate a new memory space for this vector.  Must be called prior to using the ValueVector.
-   *
-   * @param valueCount   Number of values in the vector.
-   */
-  void allocateNew(int valueCount);
+  protected static OperatorFixture fixture;
 
-/**
- * Zero out the underlying buffer backing this vector.
- */
-  void zeroVector();
+  @BeforeClass
+  public static void classSetup() throws Exception {
+    fixture = OperatorFixture.standardFixture();
+  }
+
+  @AfterClass
+  public static void classTeardown() throws Exception {
+    fixture.close();
+  }
 }
