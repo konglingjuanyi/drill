@@ -271,7 +271,6 @@
         <configuration>
           <excludes>
             <exclude>**/logging.properties</exclude>
-            <exclude>**/logback-test.xml</exclude>
             <exclude>**/logback.out.xml</exclude>
             <exclude>**/logback.xml</exclude>
           </excludes>
@@ -556,6 +555,12 @@
     </pluginManagement>
   </build>
   <dependencies>
+
+    <dependency>
+      <groupId>commons-codec</groupId>
+      <artifactId>commons-codec</artifactId>
+      <version>1.10</version>
+    </dependency>
 
     <dependency>
       <groupId>io.netty</groupId>
